@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: api-translation-platform
+  labels:
+    name: api-translation-platform
+    app: api-translation-platform

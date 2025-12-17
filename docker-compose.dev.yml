@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database for Development
+  postgres-dev:
+    image: postgres:15-alpine
+    container_name: atp-postgres-dev
+    environment:
+      POSTGRES_DB: api_translation_platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - atp-dev-network
+
+  # Redis Cache for Development
+  redis-dev:
+    image: redis:7-alpine
+    container_name: atp-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - atp-dev-network
+
+  # Database initialization service
+  db-init:
+    image: postgres:15-alpine
+    container_name: atp-db-init
+    environment:
+      PGHOST: postgres-dev
+      PGPORT: 5432
+      PGDATABASE: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      DB_NAME: api_translation_platform
+      DB_USER: atp_user
+      DB_PASSWORD: atp_password
+    depends_on:
+      postgres-dev:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts
+      - ./migrations:/migrations
+    command: >
+      sh -c "
+        echo 'Waiting for PostgreSQL to be ready...' &&
+        sleep 5 &&
+        echo 'Creating database user and database...' &&
+        psql -c \"CREATE USER atp_user WITH PASSWORD 'atp_password';\" || true &&
+        psql -c \"CREATE DATABASE api_translation_platform OWNER atp_user;\" || true &&
+        psql -c \"GRANT ALL PRIVILEGES ON DATABASE api_translation_platform TO atp_user;\" &&
+        echo 'Database initialization completed!'
+      "
+    networks:
+      - atp-dev-network
+
+volumes:
+  postgres_dev_data:
+  redis_dev_data:
+
+networks:
+  atp-dev-network:
+    driver: bridge

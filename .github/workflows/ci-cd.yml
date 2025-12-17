@@ -1,0 +1,244 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: api_translation_platform_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Install dependencies
+      run: go mod download
+
+    - name: Run unit tests
+      run: go test -v -race -coverprofile=coverage.out ./...
+      env:
+        DATABASE_HOST: localhost
+        REDIS_HOST: localhost
+
+    - name: Run property-based tests
+      run: go test -v -tags=property ./...
+      env:
+        DATABASE_HOST: localhost
+        REDIS_HOST: localhost
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.out
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Gosec Security Scanner
+      uses: securecodewarrior/github-action-gosec@master
+      with:
+        args: './...'
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+
+  build:
+    needs: [test, security-scan]
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deployment-tests:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build test image
+      run: docker build -t api-translation-platform:test .
+
+    - name: Run deployment tests
+      run: go test -v ./deployments/tests/...
+
+    - name: Test Docker Compose
+      run: |
+        docker-compose -f docker-compose.yml config
+        docker-compose -f docker-compose.yml up -d --build
+        sleep 30
+        curl -f http://localhost/health || exit 1
+        docker-compose -f docker-compose.yml down
+
+  deploy-staging:
+    if: github.ref == 'refs/heads/develop'
+    needs: [deployment-tests]
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure kubectl
+      uses: azure/k8s-set-context@v3
+      with:
+        method: kubeconfig
+        kubeconfig: ${{ secrets.KUBE_CONFIG_STAGING }}
+
+    - name: Deploy to staging
+      run: |
+        kubectl apply -f deployments/kubernetes/namespace.yaml
+        kubectl apply -f deployments/kubernetes/configmap.yaml
+        kubectl apply -f deployments/kubernetes/rbac.yaml
+        kubectl apply -f deployments/kubernetes/service.yaml
+        kubectl set image deployment/api-translation-platform api-translation-platform=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:develop -n api-translation-platform
+        kubectl rollout status deployment/api-translation-platform -n api-translation-platform
+
+    - name: Run smoke tests
+      run: |
+        kubectl wait --for=condition=ready pod -l app=api-translation-platform -n api-translation-platform --timeout=300s
+        kubectl port-forward svc/api-translation-platform-service 8080:80 -n api-translation-platform &
+        sleep 10
+        curl -f http://localhost:8080/health || exit 1
+
+  deploy-production:
+    if: github.event_name == 'release'
+    needs: [deployment-tests]
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure kubectl
+      uses: azure/k8s-set-context@v3
+      with:
+        method: kubeconfig
+        kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+
+    - name: Create backup
+      run: |
+        kubectl create job backup-$(date +%Y%m%d-%H%M%S) --from=cronjob/database-backup -n api-translation-platform
+
+    - name: Deploy to production
+      run: |
+        kubectl apply -f deployments/kubernetes/namespace.yaml
+        kubectl apply -f deployments/kubernetes/configmap.yaml
+        kubectl apply -f deployments/kubernetes/rbac.yaml
+        kubectl apply -f deployments/kubernetes/service.yaml
+        kubectl apply -f deployments/kubernetes/deployment.yaml
+        kubectl apply -f deployments/kubernetes/hpa.yaml
+        kubectl apply -f deployments/kubernetes/ingress.yaml
+        kubectl rollout status deployment/api-translation-platform -n api-translation-platform
+
+    - name: Run production smoke tests
+      run: |
+        kubectl wait --for=condition=ready pod -l app=api-translation-platform -n api-translation-platform --timeout=600s
+        # Test through ingress
+        curl -f https://api.yourdomain.com/health || exit 1
+
+    - name: Notify deployment
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#deployments'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+      if: always()

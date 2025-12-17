@@ -1,0 +1,88 @@
+server:
+  host: "0.0.0.0"
+  port: "8080"
+  read_timeout: 30
+  write_timeout: 30
+  idle_timeout: 120
+
+database:
+  host: "${DATABASE_HOST}"
+  port: ${DATABASE_PORT:-5432}
+  user: "${DATABASE_USER}"
+  password: "${DATABASE_PASSWORD}"
+  dbname: "${DATABASE_NAME}"
+  sslmode: "prefer"
+  max_open_conns: 10
+  max_idle_conns: 2
+  conn_max_lifetime: 300
+
+redis:
+  host: "${REDIS_HOST}"
+  port: ${REDIS_PORT:-6379}
+  password: "${REDIS_PASSWORD}"
+  db: ${REDIS_DB:-0}
+  pool_size: 5
+  min_idle_conns: 2
+
+python:
+  script_timeout: 30
+  max_memory: 128
+  script_path: "/app/scripts"
+  max_concurrent_executions: 20
+
+logging:
+  level: "debug"
+  format: "json"
+  output: "stdout"
+  enable_caller: true
+  enable_stacktrace: true
+
+metrics:
+  enabled: true
+  port: "9090"
+  path: "/metrics"
+  namespace: "api_translation_platform_staging"
+
+tracing:
+  enabled: true
+  jaeger_endpoint: "${JAEGER_ENDPOINT}"
+  service_name: "api-translation-platform-staging"
+  sample_rate: 1.0
+
+service_discovery:
+  enabled: true
+  heartbeat_interval: 30
+  health_check_path: "/health"
+
+load_balancer:
+  strategy: "round_robin"
+  health_check_url: "/health"
+  max_retries: 3
+  retry_interval: 5
+  circuit_breaker: true
+
+clustering:
+  enabled: true
+  config_sync_interval: 60
+  leader_election_timeout: 30
+  graceful_shutdown_timeout: 30
+  cluster_name: "staging"
+
+security:
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 500
+    burst_size: 50
+  cors:
+    enabled: true
+    allowed_origins: ["*"]
+    allowed_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allowed_headers: ["*"]
+
+monitoring:
+  health_check_interval: 30
+  metrics_collection_interval: 60
+  log_retention_days: 7
+
+backup:
+  enabled: false

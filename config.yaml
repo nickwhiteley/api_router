@@ -1,0 +1,47 @@
+server:
+  host: "0.0.0.0"
+  port: "8080"
+  read_timeout: 30
+  write_timeout: 30
+  idle_timeout: 120
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  dbname: "api_translation_platform"
+  sslmode: "disable"
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+
+python:
+  script_timeout: 30
+  max_memory: 128
+  script_path: "./scripts"
+
+logging:
+  level: "info"
+  format: "json"
+
+service_discovery:
+  enabled: false  # Disabled to avoid Redis timeout issues
+  heartbeat_interval: 30
+  health_check_path: "/health"
+
+load_balancer:
+  strategy: "round_robin"
+  health_check_url: "/health"
+  max_retries: 3
+  retry_interval: 5
+  circuit_breaker: true
+
+clustering:
+  enabled: false  # Disabled to avoid Redis timeout issues
+  config_sync_interval: 60
+  leader_election_timeout: 30
+  graceful_shutdown_timeout: 30
