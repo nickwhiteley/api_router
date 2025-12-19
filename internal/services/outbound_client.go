@@ -331,7 +331,8 @@ func (s *outboundClientService) setHeaders(req *http.Request, apiConfig *models.
 	}
 
 	// Set headers from API configuration
-	for key, value := range apiConfig.Headers {
+	allHeaders := apiConfig.Headers.GetAllHeaders()
+	for key, value := range allHeaders {
 		req.Header.Set(key, value)
 	}
 

@@ -66,6 +66,36 @@ func (v *InputValidator) SanitizeInput(input string) (string, error) {
 	return strings.TrimSpace(sanitized), nil
 }
 
+// ValidatePythonScript performs basic validation on Python scripts without sanitization
+func (v *InputValidator) ValidatePythonScript(script string) error {
+	if script == "" {
+		return nil // Empty script is allowed
+	}
+
+	// Check for obviously malicious patterns while preserving Python syntax
+	maliciousPatterns := []string{
+		`(?i)import\s+os.*system`, // os.system calls
+		`(?i)import\s+subprocess`, // subprocess imports
+		`(?i)exec\s*\(`,           // exec() calls
+		`(?i)eval\s*\(`,           // eval() calls
+		`(?i)__import__`,          // dynamic imports
+		`(?i)open\s*\(.*['"]\s*/`, // file system access
+	}
+
+	for _, pattern := range maliciousPatterns {
+		if matched, _ := regexp.MatchString(pattern, script); matched {
+			return fmt.Errorf("potentially unsafe Python code detected")
+		}
+	}
+
+	// Basic length check
+	if len(script) > 50000 { // 50KB limit
+		return fmt.Errorf("Python script too large (max 50KB)")
+	}
+
+	return nil
+}
+
 // ValidateRequiredFields validates that all required fields are present and non-empty
 func (v *InputValidator) ValidateRequiredFields(input map[string]interface{}, required []string) error {
 	for _, field := range required {
@@ -155,11 +185,20 @@ func (v *InputValidator) ValidateJSONInput(input map[string]interface{}) (map[st
 
 		// Sanitize the value if it's a string
 		if str, ok := value.(string); ok {
-			sanitizedValue, err := v.SanitizeInput(str)
-			if err != nil {
-				return nil, fmt.Errorf("failed to sanitize value for key '%s': %v", key, err)
+			// Skip sanitization for Python scripts to preserve formatting
+			if key == "python_script" {
+				// For Python scripts, only do basic validation without sanitization
+				if err := v.ValidatePythonScript(str); err != nil {
+					return nil, fmt.Errorf("invalid Python script: %v", err)
+				}
+				sanitized[sanitizedKey] = str // Keep original formatting
+			} else {
+				sanitizedValue, err := v.SanitizeInput(str)
+				if err != nil {
+					return nil, fmt.Errorf("failed to sanitize value for key '%s': %v", key, err)
+				}
+				sanitized[sanitizedKey] = sanitizedValue
 			}
-			sanitized[sanitizedKey] = sanitizedValue
 		} else {
 			sanitized[sanitizedKey] = value
 		}

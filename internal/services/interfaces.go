@@ -138,3 +138,14 @@ type MonitoringService interface {
 	StartMetricsCollection(ctx context.Context) error
 	StopMetricsCollection() error
 }
+
+// SchemaService defines the interface for API schema operations
+type SchemaService interface {
+	CreateSchema(ctx context.Context, schema *models.APISchema) (*models.APISchema, error)
+	UpdateSchema(ctx context.Context, schema *models.APISchema) (*models.APISchema, error)
+	GetSchemaByAPIID(ctx context.Context, apiConfigID string) (*models.APISchema, error)
+	DeleteSchema(ctx context.Context, schemaID string) error
+	ParseJSONSchema(ctx context.Context, jsonSchema string) (models.SchemaFields, error)
+	ParseSampleData(ctx context.Context, sampleData map[string]interface{}) (models.SchemaFields, error)
+	GenerateSchemaFromSample(ctx context.Context, apiConfigID string, sampleData map[string]interface{}) (*models.APISchema, error)
+}

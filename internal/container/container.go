@@ -52,6 +52,7 @@ var Module = fx.Options(
 	}),
 	fx.Provide(repositories.NewHealthCheckRepository),
 	fx.Provide(repositories.NewAlertRepository),
+	fx.Provide(repositories.NewAPISchemaRepository),
 
 	// Services
 	fx.Provide(services.NewAPIGatewayService),
@@ -68,6 +69,7 @@ var Module = fx.Options(
 	fx.Provide(services.NewGracefulShutdownService),
 	fx.Provide(services.NewCacheService),
 	fx.Provide(services.NewPerformanceMonitor),
+	fx.Provide(services.NewSchemaService),
 	fx.Provide(func(redis *redis.Client, config *config.Config) *services.JobProcessor {
 		return services.NewJobProcessor(redis, config, 5) // 5 workers by default
 	}),

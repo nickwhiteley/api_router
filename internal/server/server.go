@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -14,6 +16,7 @@ import (
 	"api-translation-platform/internal/logger"
 	"api-translation-platform/internal/middleware"
 	"api-translation-platform/internal/security"
+	"api-translation-platform/internal/services"
 )
 
 // Server represents the HTTP server
@@ -33,6 +36,7 @@ type Server struct {
 	performanceHandler *handlers.PerformanceHandler
 	authMiddleware     *middleware.AuthenticationMiddleware
 	securityManager    *security.SecurityManager
+	apiGatewayService  services.APIGatewayService
 }
 
 // NewServer creates a new HTTP server
@@ -50,6 +54,7 @@ func NewServer(
 	performanceHandler *handlers.PerformanceHandler,
 	authMiddleware *middleware.AuthenticationMiddleware,
 	securityManager *security.SecurityManager,
+	apiGatewayService services.APIGatewayService,
 ) *Server {
 	router := mux.NewRouter()
 
@@ -68,6 +73,7 @@ func NewServer(
 		performanceHandler: performanceHandler,
 		authMiddleware:     authMiddleware,
 		securityManager:    securityManager,
+		apiGatewayService:  apiGatewayService,
 	}
 
 	server.setupRoutes()
@@ -92,7 +98,7 @@ func (s *Server) setupRoutes() {
 	// Authentication UI routes (login and management pages)
 	s.authUIHandler.RegisterRoutes(s.router)
 
-	// Management API routes (comprehensive REST API)
+	// Management API routes (comprehensive REST API) - must be registered before API gateway
 	s.managementHandler.RegisterRoutes(s.router)
 
 	// Legacy configuration API routes (for backward compatibility)
@@ -106,6 +112,9 @@ func (s *Server) setupRoutes() {
 
 	// Performance API routes
 	s.performanceHandler.RegisterRoutes(s.router)
+
+	// API Gateway routes - handle dynamic API endpoints (must be registered LAST to avoid conflicts)
+	s.router.PathPrefix("/api/").Handler(http.HandlerFunc(s.handleAPIGatewayRequest))
 
 	// Add security middleware first (order matters)
 	securityMiddlewares := s.securityManager.GetSecurityMiddleware()
@@ -198,4 +207,61 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// handleAPIGatewayRequest handles dynamic API endpoint requests
+func (s *Server) handleAPIGatewayRequest(w http.ResponseWriter, r *http.Request) {
+	s.logger.WithField("path", r.URL.Path).Info("API Gateway request received")
+
+	// Parse the request path to extract the API endpoint
+	// Expected format: /api{endpoint} where {endpoint} is the API configuration endpoint
+	apiPath := strings.TrimPrefix(r.URL.Path, "/api")
+	if apiPath == "" {
+		apiPath = "/"
+	}
+
+	// Look up API configuration by endpoint path
+	// We need to get all API configurations and find the one that matches this endpoint
+	ctx := r.Context()
+
+	// For now, we'll need to get all API configurations and find a match
+	// In a production system, you'd want to cache this or use a more efficient lookup
+
+	// Since we don't have direct access to the configuration service here,
+	// we'll delegate to the API gateway service which should handle the lookup
+	resp, err := s.apiGatewayService.HandleInboundRequest(ctx, r, nil)
+	if err != nil {
+		s.logger.WithError(err).Error("API Gateway request processing failed")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "Internal server error", "message": "Request processing failed"}`))
+		return
+	}
+
+	// If no API configuration found, return 404
+	if resp == nil {
+		s.logger.WithField("path", apiPath).Warn("No API configuration found for path")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error": "API not found", "path": "` + apiPath + `"}`))
+		return
+	}
+
+	// Copy response headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// Write status code
+	w.WriteHeader(resp.StatusCode)
+
+	// Copy response body
+	if resp.Body != nil {
+		defer resp.Body.Close()
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			s.logger.WithError(err).Error("Failed to copy response body")
+		}
+	}
 }

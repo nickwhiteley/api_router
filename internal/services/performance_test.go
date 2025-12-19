@@ -42,7 +42,11 @@ func NewPerformanceTestSuite(t *testing.T) *PerformanceTestSuite {
 				Direction:      "inbound",
 				Endpoint:       "http://example.com/api",
 				Authentication: models.AuthenticationConfig{Type: "api_key"},
-				Headers:        map[string]string{},
+				Headers: models.HeadersConfig{
+					Static:   map[string]string{},
+					Required: []string{},
+					Dynamic:  map[string]string{},
+				},
 			},
 		}
 

@@ -90,7 +90,7 @@ The system automatically creates a default admin user during database initializa
 
 **⚠️ IMPORTANT**: Change the default password immediately after first login!
 
-For detailed information about the admin user, see [ADMIN_USER.md](ADMIN_USER.md).
+For detailed information about the admin user, see [ADMIN_USER.md](docs/ADMIN_USER.md).
 - Run all database migrations
 - Optionally insert seed data
 
@@ -270,3 +270,22 @@ The project uses both unit tests and property-based tests:
 - **Integration Tests**: Test component interactions
 
 Property-based tests validate correctness properties defined in the design specification.
+
+## Documentation
+
+Comprehensive documentation is available in the [`docs/`](docs/) directory:
+
+- **[Documentation Index](docs/README.md)** - Complete documentation overview
+- **[API Schema Implementation](docs/API_SCHEMA_IMPLEMENTATION.md)** - API schema management guide
+- **[Field Mapping](docs/FIELD_MAPPING.md)** - Field mapping functionality
+- **[Schema Management Guide](docs/SCHEMA_MANAGEMENT_GUIDE.md)** - Comprehensive schema guide
+- **[Admin User Guide](docs/ADMIN_USER.md)** - Administrative user documentation
+- **[Deployment Documentation](docs/deployment/)** - Deployment guides and checklists
+
+## License
+
+[Add your license information here]
+
+## Contributing
+
+[Add contribution guidelines here]

@@ -22,12 +22,16 @@ func (m *Migrator) Up() error {
 		&models.APIConfiguration{},
 		&models.Connector{},
 		&models.RequestLog{},
+		&models.FieldMapping{},
+		&models.APISchema{},
 	)
 }
 
 // Down rolls back all migrations (for testing purposes)
 func (m *Migrator) Down() error {
 	return m.db.Migrator().DropTable(
+		&models.APISchema{},
+		&models.FieldMapping{},
 		&models.RequestLog{},
 		&models.Connector{},
 		&models.APIConfiguration{},

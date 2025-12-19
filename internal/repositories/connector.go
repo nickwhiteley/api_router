@@ -29,6 +29,7 @@ func (r *connectorRepository) GetByID(ctx context.Context, id string) (*models.C
 		Preload("Organisation").
 		Preload("InboundAPI").
 		Preload("OutboundAPI").
+		Preload("FieldMappings").
 		First(&connector, "id = ?", id).Error
 	if err != nil {
 		return nil, err
@@ -54,6 +55,7 @@ func (r *connectorRepository) GetByInboundAPI(ctx context.Context, apiID string)
 		Preload("Organisation").
 		Preload("InboundAPI").
 		Preload("OutboundAPI").
+		Preload("FieldMappings").
 		Where("inbound_api_id = ? AND is_active = ?", apiID, true).
 		Find(&connectors).Error
 	return connectors, err

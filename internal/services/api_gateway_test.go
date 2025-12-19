@@ -22,7 +22,8 @@ func createTestAPIGatewayService() APIGatewayService {
 	mockTransformService := &MockTransformationService{}
 	mockOutboundService := &MockOutboundClientService{}
 	mockAuthService := &MockAuthenticationService{}
-	return NewAPIGatewayService(testLogger, mockConnectorRepo, mockRequestLogRepo, mockTransformService, mockOutboundService, mockAuthService)
+	mockConfigService := &MockConfigurationService{}
+	return NewAPIGatewayService(testLogger, mockConnectorRepo, mockRequestLogRepo, mockTransformService, mockOutboundService, mockAuthService, mockConfigService)
 }
 
 // MockConnectorRepository for testing
@@ -135,6 +136,156 @@ func (m *MockAuthenticationService) HashPassword(password string) (string, error
 	return args.String(0), args.Error(1)
 }
 
+// MockConfigurationService for testing
+type MockConfigurationService struct {
+	mock.Mock
+}
+
+func (m *MockConfigurationService) CreateAPIConfiguration(ctx context.Context, config *models.APIConfiguration) (*models.APIConfiguration, error) {
+	args := m.Called(ctx, config)
+	return args.Get(0).(*models.APIConfiguration), args.Error(1)
+}
+
+func (m *MockConfigurationService) UpdateAPIConfiguration(ctx context.Context, config *models.APIConfiguration) (*models.APIConfiguration, error) {
+	args := m.Called(ctx, config)
+	return args.Get(0).(*models.APIConfiguration), args.Error(1)
+}
+
+func (m *MockConfigurationService) DeleteAPIConfiguration(ctx context.Context, id string) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
+func (m *MockConfigurationService) GetAPIConfiguration(ctx context.Context, id string) (*models.APIConfiguration, error) {
+	args := m.Called(ctx, id)
+	return args.Get(0).(*models.APIConfiguration), args.Error(1)
+}
+
+func (m *MockConfigurationService) GetAPIConfigurationsByOrganisation(ctx context.Context, orgID string) ([]*models.APIConfiguration, error) {
+	args := m.Called(ctx, orgID)
+	return args.Get(0).([]*models.APIConfiguration), args.Error(1)
+}
+
+func (m *MockConfigurationService) ValidateConfiguration(ctx context.Context, config *models.APIConfiguration) error {
+	args := m.Called(ctx, config)
+	return args.Error(0)
+}
+
+func (m *MockConfigurationService) TestAPIConfiguration(ctx context.Context, apiID string, testRequest map[string]interface{}) (map[string]interface{}, error) {
+	args := m.Called(ctx, apiID, testRequest)
+	return args.Get(0).(map[string]interface{}), args.Error(1)
+}
+
+func (m *MockConfigurationService) CreateConnector(ctx context.Context, connector *models.Connector) (*models.Connector, error) {
+	args := m.Called(ctx, connector)
+	return args.Get(0).(*models.Connector), args.Error(1)
+}
+
+func (m *MockConfigurationService) UpdateConnector(ctx context.Context, connector *models.Connector) (*models.Connector, error) {
+	args := m.Called(ctx, connector)
+	return args.Get(0).(*models.Connector), args.Error(1)
+}
+
+func (m *MockConfigurationService) DeleteConnector(ctx context.Context, connectorID string) error {
+	args := m.Called(ctx, connectorID)
+	return args.Error(0)
+}
+
+func (m *MockConfigurationService) GetConnector(ctx context.Context, connectorID string) (*models.Connector, error) {
+	args := m.Called(ctx, connectorID)
+	return args.Get(0).(*models.Connector), args.Error(1)
+}
+
+func (m *MockConfigurationService) GetConnectorsByOrganisation(ctx context.Context, orgID string) ([]*models.Connector, error) {
+	args := m.Called(ctx, orgID)
+	return args.Get(0).([]*models.Connector), args.Error(1)
+}
+
+func (m *MockConfigurationService) UpdateConnectorScript(ctx context.Context, connectorID, script string) error {
+	args := m.Called(ctx, connectorID, script)
+	return args.Error(0)
+}
+
+func (m *MockConfigurationService) CreateOrganisation(ctx context.Context, org *models.Organisation) (*models.Organisation, error) {
+	args := m.Called(ctx, org)
+	return args.Get(0).(*models.Organisation), args.Error(1)
+}
+
+func (m *MockConfigurationService) UpdateOrganisation(ctx context.Context, org *models.Organisation) (*models.Organisation, error) {
+	args := m.Called(ctx, org)
+	return args.Get(0).(*models.Organisation), args.Error(1)
+}
+
+func (m *MockConfigurationService) DeleteOrganisation(ctx context.Context, orgID string) error {
+	args := m.Called(ctx, orgID)
+	return args.Error(0)
+}
+
+func (m *MockConfigurationService) GetOrganisation(ctx context.Context, orgID string) (*models.Organisation, error) {
+	args := m.Called(ctx, orgID)
+	return args.Get(0).(*models.Organisation), args.Error(1)
+}
+
+func (m *MockConfigurationService) GetAllOrganisations(ctx context.Context) ([]*models.Organisation, error) {
+	args := m.Called(ctx)
+	return args.Get(0).([]*models.Organisation), args.Error(1)
+}
+
+func (m *MockConfigurationService) CreateConfigurationVersion(ctx context.Context, resourceType, resourceID string, configData models.JSONMap, userID string) (*models.ConfigurationVersion, error) {
+	args := m.Called(ctx, resourceType, resourceID, configData, userID)
+	return args.Get(0).(*models.ConfigurationVersion), args.Error(1)
+}
+
+func (m *MockConfigurationService) GetConfigurationVersions(ctx context.Context, resourceType, resourceID string) ([]*models.ConfigurationVersion, error) {
+	args := m.Called(ctx, resourceType, resourceID)
+	return args.Get(0).([]*models.ConfigurationVersion), args.Error(1)
+}
+
+func (m *MockConfigurationService) GetConfigurationVersion(ctx context.Context, versionID string) (*models.ConfigurationVersion, error) {
+	args := m.Called(ctx, versionID)
+	return args.Get(0).(*models.ConfigurationVersion), args.Error(1)
+}
+
+func (m *MockConfigurationService) RollbackToVersion(ctx context.Context, versionID string, userID string) error {
+	args := m.Called(ctx, versionID, userID)
+	return args.Error(0)
+}
+
+func (m *MockConfigurationService) GetActiveConfigurationVersion(ctx context.Context, resourceType, resourceID string) (*models.ConfigurationVersion, error) {
+	args := m.Called(ctx, resourceType, resourceID)
+	return args.Get(0).(*models.ConfigurationVersion), args.Error(1)
+}
+
+func (m *MockConfigurationService) LogConfigurationChange(ctx context.Context, userID, action, resourceType, resourceID string, oldValues, newValues models.JSONMap) error {
+	args := m.Called(ctx, userID, action, resourceType, resourceID, oldValues, newValues)
+	return args.Error(0)
+}
+
+func (m *MockConfigurationService) GetAuditLogs(ctx context.Context, orgID string, limit, offset int) ([]*models.AuditLog, error) {
+	args := m.Called(ctx, orgID, limit, offset)
+	return args.Get(0).([]*models.AuditLog), args.Error(1)
+}
+
+func (m *MockConfigurationService) GetResourceAuditLogs(ctx context.Context, resourceType, resourceID string, limit, offset int) ([]*models.AuditLog, error) {
+	args := m.Called(ctx, resourceType, resourceID, limit, offset)
+	return args.Get(0).([]*models.AuditLog), args.Error(1)
+}
+
+func (m *MockConfigurationService) SynchronizeConfiguration(ctx context.Context, instanceID string) error {
+	args := m.Called(ctx, instanceID)
+	return args.Error(0)
+}
+
+func (m *MockConfigurationService) GetConfigurationChecksum(ctx context.Context, orgID string) (string, error) {
+	args := m.Called(ctx, orgID)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockConfigurationService) ValidateConfigurationConsistency(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
 // **Feature: api-translation-platform, Property 1: Dynamic API endpoint creation**
 // **Validates: Requirements 1.1, 1.2**
 func TestProperty_DynamicAPIEndpointCreation(t *testing.T) {
@@ -155,7 +306,11 @@ func TestProperty_DynamicAPIEndpointCreation(t *testing.T) {
 					Type:       "api_key",
 					Parameters: map[string]string{"key": "test-key"},
 				},
-				Headers: map[string]string{"Content-Type": "application/json"},
+				Headers: models.HeadersConfig{
+					Static:   map[string]string{"Content-Type": "application/json"},
+					Required: []string{},
+					Dynamic:  map[string]string{},
+				},
 			}
 
 			err := service.CreateDynamicEndpoint(context.Background(), apiConfig)

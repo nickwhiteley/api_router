@@ -118,7 +118,7 @@ func TestValidationService(t *testing.T) {
 	})
 
 	t.Run("Connector validation", func(t *testing.T) {
-		// Valid connector
+		// Valid connector with Python script
 		connector := &Connector{
 			OrganisationID: "org-123",
 			Name:           "Test Connector",
@@ -130,18 +130,42 @@ func TestValidationService(t *testing.T) {
 		err := validator.ValidateStruct(connector)
 		assert.NoError(t, err)
 
+		// Valid connector with field mappings (no Python script)
+		connectorWithMappings := &Connector{
+			OrganisationID: "org-123",
+			Name:           "Test Connector with Mappings",
+			InboundAPIID:   "api-inbound",
+			OutboundAPIID:  "api-outbound",
+			IsActive:       true,
+			FieldMappings: []FieldMapping{
+				{
+					InboundFieldPath:  "user.name",
+					OutboundFieldPath: "customer.fullName",
+				},
+			},
+		}
+		err = validator.ValidateStruct(connectorWithMappings)
+		assert.NoError(t, err)
+		err = connectorWithMappings.Validate()
+		assert.NoError(t, err)
+
 		// Invalid connector - missing organisation ID
 		connector.OrganisationID = ""
 		err = validator.ValidateStruct(connector)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "organisation_id")
 
-		// Invalid connector - missing Python script
-		connector.OrganisationID = "org-123"
-		connector.PythonScript = ""
-		err = validator.ValidateStruct(connector)
+		// Invalid connector - missing both Python script and field mappings
+		connectorInvalid := &Connector{
+			OrganisationID: "org-123",
+			Name:           "Invalid Connector",
+			InboundAPIID:   "api-inbound",
+			OutboundAPIID:  "api-outbound",
+			IsActive:       true,
+		}
+		err = connectorInvalid.Validate()
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "python_script")
+		assert.Contains(t, err.Error(), "python_script or field_mappings")
 	})
 
 	t.Run("RequestLog validation", func(t *testing.T) {
@@ -325,9 +349,13 @@ func TestAuthenticationConfigSerialization(t *testing.T) {
 func TestHeadersConfigSerialization(t *testing.T) {
 	t.Run("JSON serialization/deserialization", func(t *testing.T) {
 		original := HeadersConfig{
-			"Content-Type":    "application/json",
-			"Authorization":   "Bearer token123",
-			"X-Custom-Header": "custom-value",
+			Static: map[string]string{
+				"Content-Type":    "application/json",
+				"Authorization":   "Bearer token123",
+				"X-Custom-Header": "custom-value",
+			},
+			Required: []string{"Authorization"},
+			Dynamic:  map[string]string{},
 		}
 
 		// Test JSON marshaling
@@ -344,9 +372,13 @@ func TestHeadersConfigSerialization(t *testing.T) {
 
 	t.Run("Database Value/Scan", func(t *testing.T) {
 		headers := HeadersConfig{
-			"Accept":        "application/json",
-			"User-Agent":    "test-client/1.0",
-			"Cache-Control": "no-cache",
+			Static: map[string]string{
+				"Accept":        "application/json",
+				"User-Agent":    "test-client/1.0",
+				"Cache-Control": "no-cache",
+			},
+			Required: []string{"Accept"},
+			Dynamic:  map[string]string{},
 		}
 
 		// Test Value method
@@ -377,12 +409,11 @@ func TestHeadersConfigSerialization(t *testing.T) {
 		assert.Contains(t, err.Error(), "cannot scan")
 	})
 
-	t.Run("Value with nil HeadersConfig", func(t *testing.T) {
+	t.Run("Value with empty HeadersConfig", func(t *testing.T) {
 		var headers HeadersConfig
-		headers = nil
 		value, err := headers.Value()
 		assert.NoError(t, err)
-		assert.Nil(t, value)
+		assert.NotNil(t, value)
 	})
 }
 

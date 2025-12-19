@@ -326,7 +326,11 @@ func TestCreateAPIConfiguration(t *testing.T) {
 		Direction:      "inbound",
 		Endpoint:       "http://example.com/api",
 		Authentication: models.AuthenticationConfig{Type: "api_key"},
-		Headers:        map[string]string{"Content-Type": "application/json"},
+		Headers: models.HeadersConfig{
+			Static:   map[string]string{"Content-Type": "application/json"},
+			Required: []string{},
+			Dynamic:  map[string]string{},
+		},
 	}
 
 	ctx := context.WithValue(context.Background(), "user_id", "user-1")
@@ -365,8 +369,12 @@ func TestGetConfigurationChecksum(t *testing.T) {
 			Direction:      "inbound",
 			Endpoint:       "http://example.com/api1",
 			Authentication: models.AuthenticationConfig{Type: "api_key"},
-			Headers:        map[string]string{"Content-Type": "application/json"},
-			UpdatedAt:      time.Unix(1234567890, 0),
+			Headers: models.HeadersConfig{
+				Static:   map[string]string{"Content-Type": "application/json"},
+				Required: []string{},
+				Dynamic:  map[string]string{},
+			},
+			UpdatedAt: time.Unix(1234567890, 0),
 		},
 		{
 			ID:             "config-2",
@@ -375,8 +383,12 @@ func TestGetConfigurationChecksum(t *testing.T) {
 			Direction:      "outbound",
 			Endpoint:       "http://example.com/api2",
 			Authentication: models.AuthenticationConfig{Type: "basic"},
-			Headers:        map[string]string{"SOAPAction": "test"},
-			UpdatedAt:      time.Unix(1234567891, 0),
+			Headers: models.HeadersConfig{
+				Static:   map[string]string{"SOAPAction": "test"},
+				Required: []string{},
+				Dynamic:  map[string]string{},
+			},
+			UpdatedAt: time.Unix(1234567891, 0),
 		},
 	}
 

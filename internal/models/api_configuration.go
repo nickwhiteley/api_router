@@ -27,6 +27,7 @@ type APIConfiguration struct {
 	Organisation       *Organisation `json:"organisation,omitempty" gorm:"foreignKey:OrganisationID"`
 	InboundConnectors  []Connector   `json:"inbound_connectors,omitempty" gorm:"foreignKey:InboundAPIID"`
 	OutboundConnectors []Connector   `json:"outbound_connectors,omitempty" gorm:"foreignKey:OutboundAPIID"`
+	Schema             *APISchema    `json:"schema,omitempty" gorm:"foreignKey:APIConfigurationID"`
 }
 
 // AuthenticationConfig holds authentication configuration
@@ -36,7 +37,14 @@ type AuthenticationConfig struct {
 }
 
 // HeadersConfig holds HTTP headers configuration
-type HeadersConfig map[string]string
+type HeadersConfig struct {
+	// Static headers that are always sent/required
+	Static map[string]string `json:"static"`
+	// Required headers for inbound APIs (validation only)
+	Required []string `json:"required"`
+	// Dynamic headers that can be set per request
+	Dynamic map[string]string `json:"dynamic"`
+}
 
 // Value implements driver.Valuer interface for GORM
 func (a AuthenticationConfig) Value() (driver.Value, error) {
@@ -59,16 +67,17 @@ func (a *AuthenticationConfig) Scan(value interface{}) error {
 
 // Value implements driver.Valuer interface for GORM
 func (h HeadersConfig) Value() (driver.Value, error) {
-	if h == nil {
-		return nil, nil
-	}
 	return json.Marshal(h)
 }
 
 // Scan implements sql.Scanner interface for GORM
 func (h *HeadersConfig) Scan(value interface{}) error {
 	if value == nil {
-		*h = make(HeadersConfig)
+		*h = HeadersConfig{
+			Static:   make(map[string]string),
+			Required: []string{},
+			Dynamic:  make(map[string]string),
+		}
 		return nil
 	}
 
@@ -77,7 +86,94 @@ func (h *HeadersConfig) Scan(value interface{}) error {
 		return fmt.Errorf("cannot scan %T into HeadersConfig", value)
 	}
 
-	return json.Unmarshal(bytes, h)
+	// Try to unmarshal as new structure first
+	if err := json.Unmarshal(bytes, h); err != nil {
+		// Fallback: try to unmarshal as old map[string]string format for backward compatibility
+		var oldHeaders map[string]string
+		if err := json.Unmarshal(bytes, &oldHeaders); err != nil {
+			return err
+		}
+		// Convert old format to new format
+		*h = HeadersConfig{
+			Static:   oldHeaders,
+			Required: []string{},
+			Dynamic:  make(map[string]string),
+		}
+	}
+
+	// Initialize maps if nil
+	if h.Static == nil {
+		h.Static = make(map[string]string)
+	}
+	if h.Dynamic == nil {
+		h.Dynamic = make(map[string]string)
+	}
+	if h.Required == nil {
+		h.Required = []string{}
+	}
+
+	return nil
+}
+
+// GetAllHeaders returns all static and dynamic headers combined
+func (h *HeadersConfig) GetAllHeaders() map[string]string {
+	result := make(map[string]string)
+
+	// Add static headers
+	for k, v := range h.Static {
+		result[k] = v
+	}
+
+	// Add dynamic headers (they can override static ones)
+	for k, v := range h.Dynamic {
+		result[k] = v
+	}
+
+	return result
+}
+
+// ValidateRequiredHeaders checks if all required headers are present in the request
+func (h *HeadersConfig) ValidateRequiredHeaders(requestHeaders map[string][]string) []string {
+	var missing []string
+
+	for _, requiredHeader := range h.Required {
+		found := false
+		for headerName := range requestHeaders {
+			if headerName == requiredHeader {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, requiredHeader)
+		}
+	}
+
+	return missing
+}
+
+// AddStaticHeader adds a static header
+func (h *HeadersConfig) AddStaticHeader(name, value string) {
+	if h.Static == nil {
+		h.Static = make(map[string]string)
+	}
+	h.Static[name] = value
+}
+
+// AddRequiredHeader adds a required header for validation
+func (h *HeadersConfig) AddRequiredHeader(name string) {
+	if h.Required == nil {
+		h.Required = []string{}
+	}
+
+	// Check if already exists
+	for _, existing := range h.Required {
+		if existing == name {
+			return
+		}
+	}
+
+	h.Required = append(h.Required, name)
 }
 
 // TableName returns the table name for APIConfiguration

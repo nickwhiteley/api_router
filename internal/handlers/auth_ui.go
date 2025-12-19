@@ -14,6 +14,7 @@ import (
 
 	"api-translation-platform/internal/logger"
 	"api-translation-platform/internal/models"
+	"api-translation-platform/internal/repositories"
 	"api-translation-platform/internal/services"
 
 	"github.com/gorilla/mux"
@@ -21,10 +22,12 @@ import (
 
 // AuthUIHandler handles authentication UI pages
 type AuthUIHandler struct {
-	logger        *logger.Logger
-	authService   services.AuthenticationService
-	userService   services.UserManagementService
-	configService services.ConfigurationService
+	logger         *logger.Logger
+	authService    services.AuthenticationService
+	userService    services.UserManagementService
+	configService  services.ConfigurationService
+	schemaService  services.SchemaService
+	requestLogRepo repositories.RequestLogRepository
 }
 
 // Helper function to decode JSON from request, handling security middleware sanitized body
@@ -82,12 +85,16 @@ func NewAuthUIHandler(
 	authService services.AuthenticationService,
 	userService services.UserManagementService,
 	configService services.ConfigurationService,
+	schemaService services.SchemaService,
+	requestLogRepo repositories.RequestLogRepository,
 ) *AuthUIHandler {
 	return &AuthUIHandler{
-		logger:        logger,
-		authService:   authService,
-		userService:   userService,
-		configService: configService,
+		logger:         logger,
+		authService:    authService,
+		userService:    userService,
+		configService:  configService,
+		schemaService:  schemaService,
+		requestLogRepo: requestLogRepo,
 	}
 }
 
@@ -127,8 +134,16 @@ func (h *AuthUIHandler) RegisterRoutes(router *mux.Router) {
 	orgRouter.HandleFunc("/apis/{apiID}/test", h.HandleTestAPI).Methods("POST")
 	orgRouter.HandleFunc("/connectors", h.HandleConnectorManagement).Methods("GET")
 	orgRouter.HandleFunc("/connectors", h.HandleCreateConnector).Methods("POST")
+	orgRouter.HandleFunc("/connectors/{connectorID}", h.HandleGetConnector).Methods("GET")
 	orgRouter.HandleFunc("/connectors/{connectorID}", h.HandleUpdateConnector).Methods("PUT")
 	orgRouter.HandleFunc("/connectors/{connectorID}", h.HandleDeleteConnector).Methods("DELETE")
+
+	// API Schema management
+	orgRouter.HandleFunc("/apis/{apiID}/schema", h.HandleGetAPISchema).Methods("GET")
+	orgRouter.HandleFunc("/apis/{apiID}/schema", h.HandleCreateAPISchema).Methods("POST")
+	orgRouter.HandleFunc("/apis/{apiID}/schema", h.HandleUpdateAPISchema).Methods("PUT")
+	orgRouter.HandleFunc("/apis/{apiID}/schema", h.HandleDeleteAPISchema).Methods("DELETE")
+
 	orgRouter.HandleFunc("/users", h.HandleOrgUsersManagement).Methods("GET")
 	orgRouter.HandleFunc("/logs", h.HandleLogsManagement).Methods("GET")
 	orgRouter.HandleFunc("/metrics", h.HandleMetricsManagement).Methods("GET")
@@ -1904,6 +1919,29 @@ func (h *AuthUIHandler) renderAPIManagement(w http.ResponseWriter, r *http.Reque
         .breadcrumb { margin-bottom: 2rem; color: #666; }
         .breadcrumb a { color: #667eea; text-decoration: none; }
         .breadcrumb a:hover { text-decoration: underline; }
+        
+        /* Schema Management Modal Styles */
+        .schema-management-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .schema-modal-content { background: white; border-radius: 8px; padding: 2rem; max-width: 700px; width: 90%; max-height: 80vh; overflow-y: auto; }
+        .schema-modal-content h3 { margin-bottom: 1rem; color: #333; }
+        .schema-status { margin-bottom: 1.5rem; padding: 1rem; border-radius: 6px; }
+        .schema-exists { color: #155724; background: #d4edda; padding: 0.5rem; border-radius: 4px; margin: 0; }
+        .no-schema { color: #721c24; background: #f8d7da; padding: 0.5rem; border-radius: 4px; margin: 0; }
+        .existing-fields { margin-top: 1rem; }
+        .existing-fields h4 { margin-bottom: 0.5rem; color: #555; }
+        .field-list { max-height: 150px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; }
+        .field-item-display { display: flex; justify-content: space-between; padding: 0.25rem 0.5rem; margin: 0.25rem 0; background: #f8f9fa; border-radius: 3px; }
+        .field-path { font-weight: 500; }
+        .field-type { font-size: 0.8rem; color: #666; font-style: italic; }
+        .schema-actions h4 { margin-bottom: 0.5rem; color: #555; }
+        .schema-upload-options { margin-bottom: 1rem; }
+        .schema-upload-options label { display: block; margin-bottom: 0.5rem; }
+        .file-upload-area { border: 2px dashed #ccc; border-radius: 8px; padding: 2rem; text-align: center; margin-bottom: 1rem; transition: all 0.3s ease; cursor: pointer; }
+        .file-upload-area:hover, .file-upload-area.drag-over { border-color: #667eea; background: #f8f9ff; }
+        .upload-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+        .or-divider { text-align: center; margin: 1rem 0; color: #666; font-weight: 500; }
+        #schemaTextInput { width: 100%; min-height: 150px; font-family: 'Courier New', monospace; }
+        .schema-modal-actions { display: flex; gap: 1rem; margin-top: 1.5rem; }
     </style>
 </head>
 <body>
@@ -1981,6 +2019,41 @@ func (h *AuthUIHandler) renderAPIManagement(w http.ResponseWriter, r *http.Reque
                     <small style="color: #666; margin-top: 0.5rem; display: block;">This is the URL that external applications should use to connect to your API.</small>
                 </div>
                 
+                <!-- Header Configuration -->
+                <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem;">
+                    <h4 style="margin: 0 0 1rem 0; color: #333;">Header Configuration</h4>
+                    
+                    <!-- Static Headers -->
+                    <div style="margin-bottom: 1.5rem;">
+                        <label style="display: block; margin-bottom: 0.5rem; font-weight: 600; color: #555;">Static Headers</label>
+                        <small style="color: #666; display: block; margin-bottom: 0.5rem;">Headers that are always sent with requests (outbound) or expected (inbound)</small>
+                        <div id="staticHeadersList"></div>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                            <input type="text" id="newStaticHeaderName" placeholder="Header name" style="flex: 1; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                            <input type="text" id="newStaticHeaderValue" placeholder="Header value" style="flex: 1; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                            <button type="button" onclick="addStaticHeader()" style="padding: 0.5rem 1rem; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;">Add</button>
+                        </div>
+                        <div style="margin-top: 0.5rem;">
+                            <small style="color: #666;">Common headers:</small>
+                            <button type="button" onclick="addCommonHeader('Authorization', 'Bearer YOUR_TOKEN')" style="margin: 0.25rem; padding: 0.25rem 0.5rem; background: #e9ecef; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; font-size: 0.875rem;">Authorization</button>
+                            <button type="button" onclick="addCommonHeader('X-API-Key', 'YOUR_API_KEY')" style="margin: 0.25rem; padding: 0.25rem 0.5rem; background: #e9ecef; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; font-size: 0.875rem;">X-API-Key</button>
+                            <button type="button" onclick="addCommonHeader('Content-Type', 'application/json')" style="margin: 0.25rem; padding: 0.25rem 0.5rem; background: #e9ecef; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; font-size: 0.875rem;">Content-Type</button>
+                            <button type="button" onclick="addCommonHeader('Accept', 'application/json')" style="margin: 0.25rem; padding: 0.25rem 0.5rem; background: #e9ecef; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; font-size: 0.875rem;">Accept</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Required Headers (Inbound Only) -->
+                    <div id="requiredHeadersSection" style="display: none; margin-bottom: 1.5rem;">
+                        <label style="display: block; margin-bottom: 0.5rem; font-weight: 600; color: #555;">Required Headers (Validation)</label>
+                        <small style="color: #666; display: block; margin-bottom: 0.5rem;">Headers that must be present in incoming requests</small>
+                        <div id="requiredHeadersList"></div>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                            <input type="text" id="newRequiredHeader" placeholder="Header name (e.g., X-API-Key)" style="flex: 1; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                            <button type="button" onclick="addRequiredHeader()" style="padding: 0.5rem 1rem; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">Add Required</button>
+                        </div>
+                    </div>
+                </div>
+                
                 <div class="form-actions" style="display: flex; gap: 1rem; margin-top: 2rem;">
                     <button type="submit" class="btn" style="background: #667eea; color: white; padding: 0.75rem 1.5rem; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">
                         Create API
@@ -2036,6 +2109,7 @@ func (h *AuthUIHandler) renderAPIManagement(w http.ResponseWriter, r *http.Reque
                         <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
                         <td>
                             <div class="actions">
+                                <button class="btn btn-sm" onclick="manageSchema('{{.ID}}', '{{.Name}}')">Schema</button>
                                 <button class="btn btn-sm" onclick="editAPI('{{.ID}}', '{{.Name}}', '{{.Type}}', '{{.Direction}}', '{{.Endpoint}}')">Edit</button>
                                 <button class="btn btn-sm" onclick="testAPI('{{.ID}}')">Test</button>
                                 <button class="btn btn-sm btn-danger" onclick="deleteAPI('{{.ID}}')">Delete</button>
@@ -2126,6 +2200,7 @@ func (h *AuthUIHandler) renderAPIManagement(w http.ResponseWriter, r *http.Reque
             document.getElementById('createAPIForm').style.display = 'none';
             clearFormErrors();
             document.getElementById('apiForm').reset();
+            resetHeadersConfig();
         }
         
         function clearFormErrors() {
@@ -2234,7 +2309,7 @@ func (h *AuthUIHandler) renderAPIManagement(w http.ResponseWriter, r *http.Reque
                     type: "none",
                     parameters: {}
                 },
-                headers: {}
+                headers: getHeadersConfig()
             };
             
             console.log('Creating API with payload:', payload);
@@ -2713,6 +2788,322 @@ func (h *AuthUIHandler) renderAPIManagement(w http.ResponseWriter, r *http.Reque
             // Use the same createAPI function
             createAPI(name, type, direction, endpoint);
         }
+
+        // Schema Management Functions
+        function manageSchema(apiId, apiName) {
+            showSchemaManagementModal(apiId, apiName);
+        }
+
+        function showSchemaManagementModal(apiId, apiName) {
+            // First, check if schema exists
+            fetch('/manage/org/{{.OrgID}}/apis/' + apiId + '/schema')
+                .then(response => response.json())
+                .then(schema => {
+                    const hasSchema = schema && schema.parsed_fields && schema.parsed_fields.length > 0;
+                    showSchemaModal(apiId, apiName, hasSchema ? schema : null);
+                })
+                .catch(error => {
+                    console.error('Error loading schema:', error);
+                    showSchemaModal(apiId, apiName, null);
+                });
+        }
+
+        function showSchemaModal(apiId, apiName, existingSchema) {
+            const modal = document.createElement('div');
+            modal.className = 'schema-management-modal';
+            modal.innerHTML = '<div class="schema-modal-content">' +
+                '<h3>Manage Schema for: ' + apiName + '</h3>' +
+                '<div class="schema-status">' +
+                    (existingSchema ? 
+                        '<p class="schema-exists">✅ Schema is defined (' + existingSchema.parsed_fields.length + ' fields)</p>' +
+                        '<div class="existing-fields">' +
+                            '<h4>Current Fields:</h4>' +
+                            '<div class="field-list">' +
+                                existingSchema.parsed_fields.map(field => 
+                                    '<div class="field-item-display">' +
+                                        '<span class="field-path">' + field.path + '</span>' +
+                                        '<span class="field-type">(' + field.type + ')</span>' +
+                                    '</div>'
+                                ).join('') +
+                            '</div>' +
+                        '</div>'
+                        : '<p class="no-schema">❌ No schema defined</p>'
+                    ) +
+                '</div>' +
+                '<div class="schema-actions">' +
+                    '<h4>Schema Management Options:</h4>' +
+                    '<div class="schema-upload-options">' +
+                        '<label><input type="radio" name="schema_method" value="sample" checked> Upload Sample JSON Data</label>' +
+                        '<label><input type="radio" name="schema_method" value="json_schema"> Upload JSON Schema</label>' +
+                        '<label><input type="radio" name="schema_method" value="manual"> Define Fields Manually</label>' +
+                    '</div>' +
+                    '<div id="schemaUploadArea">' +
+                        '<div class="file-upload-area" ondrop="dropSchemaFile(event)" ondragover="allowDrop(event)" ondragenter="dragEnter(event)" ondragleave="dragLeave(event)">' +
+                            '<div class="upload-icon">📁</div>' +
+                            '<p>Drag and drop a JSON file here, or</p>' +
+                            '<input type="file" id="schemaFileInput" accept=".json" onchange="handleSchemaFile(event)" style="display: none;">' +
+                            '<button type="button" onclick="document.getElementById(\'schemaFileInput\').click()" class="btn btn-secondary">Choose File</button>' +
+                        '</div>' +
+                        '<div class="or-divider">OR</div>' +
+                        '<textarea id="schemaTextInput" placeholder="Paste JSON data or schema here..." rows="8"></textarea>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="schema-modal-actions">' +
+                    '<button type="button" onclick="uploadSchemaForAPI(\'' + apiId + '\')" class="btn">Save Schema</button>' +
+                    (existingSchema ? '<button type="button" onclick="deleteSchemaForAPI(\'' + apiId + '\')" class="btn btn-danger">Delete Schema</button>' : '') +
+                    '<button type="button" onclick="closeSchemaManagementModal()" class="btn" style="background: #6c757d;">Cancel</button>' +
+                '</div>' +
+            '</div>';
+            document.body.appendChild(modal);
+        }
+
+        function closeSchemaManagementModal() {
+            const modal = document.querySelector('.schema-management-modal');
+            if (modal) {
+                modal.remove();
+            }
+        }
+
+        function allowDrop(event) {
+            event.preventDefault();
+        }
+
+        function dragEnter(event) {
+            event.preventDefault();
+            event.target.closest('.file-upload-area').classList.add('drag-over');
+        }
+
+        function dragLeave(event) {
+            event.preventDefault();
+            event.target.closest('.file-upload-area').classList.remove('drag-over');
+        }
+
+        function dropSchemaFile(event) {
+            event.preventDefault();
+            const uploadArea = event.target.closest('.file-upload-area');
+            uploadArea.classList.remove('drag-over');
+            
+            const files = event.dataTransfer.files;
+            if (files.length > 0) {
+                handleSchemaFileUpload(files[0]);
+            }
+        }
+
+        function handleSchemaFile(event) {
+            const file = event.target.files[0];
+            if (file) {
+                handleSchemaFileUpload(file);
+            }
+        }
+
+        function handleSchemaFileUpload(file) {
+            if (!file.name.endsWith('.json')) {
+                alert('Please select a JSON file');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const jsonContent = JSON.parse(e.target.result);
+                    document.getElementById('schemaTextInput').value = JSON.stringify(jsonContent, null, 2);
+                } catch (error) {
+                    alert('Invalid JSON file: ' + error.message);
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function uploadSchemaForAPI(apiId) {
+            const method = document.querySelector('input[name="schema_method"]:checked').value;
+            const schemaInput = document.getElementById('schemaTextInput').value.trim();
+            
+            if (!schemaInput) {
+                alert('Please provide schema data');
+                return;
+            }
+
+            let payload;
+            try {
+                const jsonData = JSON.parse(schemaInput);
+                
+                payload = {
+                    schema_type: method === 'json_schema' ? 'json_schema' : 'custom',
+                    schema_content: {
+                        raw: method === 'json_schema' ? schemaInput : '',
+                        sample_data: method === 'sample' ? jsonData : null,
+                        description: 'Uploaded via Schema Management'
+                    }
+                };
+            } catch (error) {
+                alert('Invalid JSON: ' + error.message);
+                return;
+            }
+
+            fetch('/manage/org/{{.OrgID}}/apis/' + apiId + '/schema', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to upload schema');
+                }
+                return response.json();
+            })
+            .then(data => {
+                alert('Schema uploaded successfully! Found ' + data.parsed_fields.length + ' fields.');
+                closeSchemaManagementModal();
+                // Optionally refresh the page to show updated status
+                // location.reload();
+            })
+            .catch(error => {
+                console.error('Error uploading schema:', error);
+                alert('Error uploading schema: ' + error.message);
+            });
+        }
+
+        function deleteSchemaForAPI(apiId) {
+            if (!confirm('Are you sure you want to delete this schema? This will affect field mappings that use these fields.')) {
+                return;
+            }
+
+            fetch('/manage/org/{{.OrgID}}/apis/' + apiId + '/schema', {
+                method: 'DELETE'
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to delete schema');
+                }
+                alert('Schema deleted successfully!');
+                closeSchemaManagementModal();
+            })
+            .catch(error => {
+                console.error('Error deleting schema:', error);
+                alert('Error deleting schema: ' + error.message);
+            });
+        }
+        
+        // Header Management Functions
+        let staticHeaders = {};
+        let requiredHeaders = [];
+        
+        function updateHeaderVisibility() {
+            const direction = document.getElementById('apiDirection').value;
+            const requiredSection = document.getElementById('requiredHeadersSection');
+            
+            if (direction === 'inbound') {
+                requiredSection.style.display = 'block';
+            } else {
+                requiredSection.style.display = 'none';
+            }
+        }
+        
+        // Add event listener for direction changes
+        document.addEventListener('DOMContentLoaded', function() {
+            const directionField = document.getElementById('apiDirection');
+            if (directionField) {
+                directionField.addEventListener('change', updateHeaderVisibility);
+            }
+        });
+        
+        function addStaticHeader() {
+            const nameField = document.getElementById('newStaticHeaderName');
+            const valueField = document.getElementById('newStaticHeaderValue');
+            const name = nameField.value.trim();
+            const value = valueField.value.trim();
+            
+            if (!name || !value) {
+                alert('Please enter both header name and value');
+                return;
+            }
+            
+            staticHeaders[name] = value;
+            nameField.value = '';
+            valueField.value = '';
+            renderStaticHeaders();
+        }
+        
+        function addCommonHeader(name, value) {
+            document.getElementById('newStaticHeaderName').value = name;
+            document.getElementById('newStaticHeaderValue').value = value;
+        }
+        
+        function removeStaticHeader(name) {
+            delete staticHeaders[name];
+            renderStaticHeaders();
+        }
+        
+        function renderStaticHeaders() {
+            const container = document.getElementById('staticHeadersList');
+            container.innerHTML = '';
+            
+            Object.entries(staticHeaders).forEach(([name, value]) => {
+                const headerDiv = document.createElement('div');
+                headerDiv.style.cssText = 'display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; padding: 0.5rem; background: white; border: 1px solid #ddd; border-radius: 4px;';
+                headerDiv.innerHTML = ` + "`" + `
+                    <code style="flex: 1; color: #0056b3;">${name}: ${value}</code>
+                    <button type="button" onclick="removeStaticHeader('${name}')" style="padding: 0.25rem 0.5rem; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75rem;">Remove</button>
+                ` + "`" + `;
+                container.appendChild(headerDiv);
+            });
+        }
+        
+        function addRequiredHeader() {
+            const field = document.getElementById('newRequiredHeader');
+            const name = field.value.trim();
+            
+            if (!name) {
+                alert('Please enter a header name');
+                return;
+            }
+            
+            if (requiredHeaders.includes(name)) {
+                alert('Header already in required list');
+                return;
+            }
+            
+            requiredHeaders.push(name);
+            field.value = '';
+            renderRequiredHeaders();
+        }
+        
+        function removeRequiredHeader(name) {
+            requiredHeaders = requiredHeaders.filter(h => h !== name);
+            renderRequiredHeaders();
+        }
+        
+        function renderRequiredHeaders() {
+            const container = document.getElementById('requiredHeadersList');
+            container.innerHTML = '';
+            
+            requiredHeaders.forEach(name => {
+                const headerDiv = document.createElement('div');
+                headerDiv.style.cssText = 'display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; padding: 0.5rem; background: white; border: 1px solid #ddd; border-radius: 4px;';
+                headerDiv.innerHTML = ` + "`" + `
+                    <code style="flex: 1; color: #dc3545;">${name} (required)</code>
+                    <button type="button" onclick="removeRequiredHeader('${name}')" style="padding: 0.25rem 0.5rem; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75rem;">Remove</button>
+                ` + "`" + `;
+                container.appendChild(headerDiv);
+            });
+        }
+        
+        function getHeadersConfig() {
+            return {
+                static: staticHeaders,
+                required: requiredHeaders,
+                dynamic: {}
+            };
+        }
+        
+        function resetHeadersConfig() {
+            staticHeaders = {};
+            requiredHeaders = [];
+            renderStaticHeaders();
+            renderRequiredHeaders();
+        }
     </script>
 </body>
 </html>`
@@ -2798,6 +3189,45 @@ func (h *AuthUIHandler) renderConnectorManagement(w http.ResponseWriter, user *m
         .api-option { padding: 0.75rem; cursor: pointer; border-bottom: 1px solid #eee; }
         .api-option:hover { background: #f8f9fa; }
         .api-option:last-child { border-bottom: none; }
+        
+        /* Field Mapping Styles */
+        .radio-group { display: flex; gap: 1rem; }
+        .radio-group label { display: flex; align-items: center; gap: 0.5rem; font-weight: normal; }
+        .field-mapping-container { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; background: #f9f9f9; }
+        .mapping-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 1rem; }
+        .inbound-fields, .outbound-fields { background: white; border-radius: 6px; padding: 1rem; }
+        .inbound-fields h4, .outbound-fields h4 { margin-bottom: 0.5rem; color: #555; font-size: 0.9rem; }
+        .field-list { min-height: 150px; border: 1px dashed #ccc; border-radius: 4px; padding: 0.5rem; transition: background-color 0.3s; }
+        .field-list.drag-over { background-color: #e3f2fd; border-color: #667eea; }
+        .field-item { padding: 0.5rem; margin: 0.25rem 0; background: #e3f2fd; border-radius: 4px; cursor: grab; user-select: none; transition: all 0.3s; }
+        .field-item:hover { background: #bbdefb; transform: translateX(2px); }
+        .field-item:active { cursor: grabbing; }
+        .field-item.dragging { opacity: 0.5; }
+        .field-item.drop-target { background: #c8e6c9; border: 2px solid #4caf50; }
+        .mappings-list { background: white; border-radius: 6px; padding: 1rem; }
+        .mappings-container { min-height: 100px; border: 1px dashed #ccc; border-radius: 4px; padding: 0.5rem; margin-bottom: 1rem; }
+        .mapping-item { display: flex; align-items: center; justify-content: space-between; padding: 0.5rem; margin: 0.25rem 0; background: #f0f8ff; border-radius: 4px; }
+        .mapping-path { font-family: 'Courier New', monospace; font-size: 0.9rem; }
+        .transform-script { font-size: 0.8rem; color: #666; font-style: italic; }
+        .btn-remove { background: #dc3545; color: white; border: none; border-radius: 50%; width: 24px; height: 24px; cursor: pointer; font-size: 0.8rem; }
+        .btn-remove:hover { background: #c82333; }
+        .text-muted { color: #6c757d; font-style: italic; }
+        
+        /* Schema Modal Styles */
+        .schema-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .schema-modal-content { background: white; border-radius: 8px; padding: 2rem; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
+        .schema-modal-content h3 { margin-bottom: 1rem; color: #333; }
+        .schema-upload-options { margin-bottom: 1rem; }
+        .schema-upload-options label { display: block; margin-bottom: 0.5rem; }
+        .schema-modal-actions { display: flex; gap: 1rem; margin-top: 1rem; }
+        #schemaInput { width: 100%; min-height: 200px; font-family: 'Courier New', monospace; }
+        
+        /* Enhanced Field Styles */
+        .field-item { display: flex; justify-content: space-between; align-items: center; }
+        .field-path { font-weight: 500; }
+        .field-type { font-size: 0.8rem; color: #666; font-style: italic; }
+        .no-schema-message { text-align: center; padding: 1rem; }
+        .no-schema-message .btn { margin-top: 0.5rem; }
         .api-info { font-size: 0.875rem; color: #666; margin-top: 0.25rem; }
     </style>
 </head>
@@ -2856,8 +3286,22 @@ func (h *AuthUIHandler) renderConnectorManagement(w http.ResponseWriter, user *m
                 </div>
                 
                 <div class="form-group">
-                    <label for="pythonScript">Python Transformation Script *</label>
-                    <textarea id="pythonScript" name="python_script" required placeholder="# Enter your Python transformation script here
+                    <label>Transformation Method</label>
+                    <div class="radio-group">
+                        <label>
+                            <input type="radio" name="transformation_method" value="script" checked onchange="toggleTransformationMethod()">
+                            Python Script
+                        </label>
+                        <label>
+                            <input type="radio" name="transformation_method" value="mappings" onchange="toggleTransformationMethod()">
+                            Field Mappings (Drag & Drop)
+                        </label>
+                    </div>
+                </div>
+
+                <div id="scriptSection" class="form-group">
+                    <label for="pythonScript">Python Transformation Script</label>
+                    <textarea id="pythonScript" name="python_script" placeholder="# Enter your Python transformation script here
 # Example:
 def transform(input_data):
     # Transform the input data
@@ -2866,6 +3310,34 @@ def transform(input_data):
     }
     return output_data"></textarea>
                     <div class="error-message" id="scriptError"></div>
+                </div>
+
+                <div id="mappingsSection" class="form-group" style="display: none;">
+                    <label>Field Mappings</label>
+                    <div class="field-mapping-container">
+                        <div class="mapping-columns">
+                            <div class="inbound-fields">
+                                <h4>Inbound API Fields</h4>
+                                <div id="inboundFields" class="field-list">
+                                    <p class="text-muted">Select an inbound API to see available fields</p>
+                                </div>
+                            </div>
+                            <div class="outbound-fields">
+                                <h4>Outbound API Fields</h4>
+                                <div id="outboundFields" class="field-list" ondrop="drop(event)" ondragover="allowDrop(event)" ondragenter="allowDrop(event)">
+                                    <p class="text-muted">Select an outbound API to see available fields</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mappings-list">
+                            <h4>Field Mappings</h4>
+                            <div id="fieldMappings" class="mappings-container">
+                                <p class="text-muted">No mappings created yet. Drag fields from left to right to create mappings.</p>
+                            </div>
+                            <button type="button" onclick="addFieldMapping()" class="btn btn-secondary">Add Manual Mapping</button>
+                        </div>
+                    </div>
+                    <div class="error-message" id="mappingsError"></div>
                 </div>
                 
                 <div class="form-group">
@@ -2880,6 +3352,112 @@ def transform(input_data):
                         Create Connector
                     </button>
                     <button type="button" onclick="cancelCreateConnectorForm()" class="btn" style="background: #6c757d; color: white; padding: 0.75rem 1.5rem; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">
+                        Cancel
+                    </button>
+                </div>
+            </form>
+        </div>
+        
+        <!-- Connector Edit Form -->
+        <div id="editConnectorForm" style="display: none; background: white; padding: 2rem; margin: 2rem 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);">
+            <h3 style="margin-bottom: 1.5rem; color: #333;">Edit Connector</h3>
+            <form id="editConnectorFormElement">
+                <input type="hidden" id="editConnectorId" name="id">
+                
+                <div class="form-group">
+                    <label for="editConnectorName">Connector Name *</label>
+                    <input type="text" id="editConnectorName" name="name" required placeholder="Enter connector name">
+                    <div class="error-message" id="editNameError"></div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="editInboundAPI">Inbound API *</label>
+                        <div class="api-search">
+                            <input type="text" id="editInboundAPI" name="inbound_api" required placeholder="Search for inbound API..." autocomplete="off" onkeyup="filterAPIs('editInbound')">
+                            <input type="hidden" id="editInboundAPIId" name="inbound_api_id">
+                            <div class="api-dropdown" id="editInboundDropdown"></div>
+                        </div>
+                        <div class="error-message" id="editInboundError"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="editOutboundAPI">Outbound API *</label>
+                        <div class="api-search">
+                            <input type="text" id="editOutboundAPI" name="outbound_api" required placeholder="Search for outbound API..." autocomplete="off" onkeyup="filterAPIs('editOutbound')">
+                            <input type="hidden" id="editOutboundAPIId" name="outbound_api_id">
+                            <div class="api-dropdown" id="editOutboundDropdown"></div>
+                        </div>
+                        <div class="error-message" id="editOutboundError"></div>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Transformation Method</label>
+                    <div class="radio-group">
+                        <label>
+                            <input type="radio" name="edit_transformation_method" value="script" checked onchange="toggleEditTransformationMethod()">
+                            Python Script
+                        </label>
+                        <label>
+                            <input type="radio" name="edit_transformation_method" value="mappings" onchange="toggleEditTransformationMethod()">
+                            Field Mappings (Drag & Drop)
+                        </label>
+                    </div>
+                </div>
+
+                <div id="editScriptSection" class="form-group">
+                    <label for="editPythonScript">Python Transformation Script</label>
+                    <textarea id="editPythonScript" name="python_script" placeholder="# Enter your Python transformation script here
+# Example:
+def transform(input_data):
+    # Transform the input data
+    output_data = {
+        'transformed': input_data
+    }
+    return output_data"></textarea>
+                    <div class="error-message" id="editScriptError"></div>
+                </div>
+
+                <div id="editMappingsSection" class="form-group" style="display: none;">
+                    <label>Field Mappings</label>
+                    <div class="field-mapping-container">
+                        <div class="mapping-columns">
+                            <div class="inbound-fields">
+                                <h4>Inbound API Fields</h4>
+                                <div id="editInboundFields" class="field-list">
+                                    <p class="text-muted">Select an inbound API to see available fields</p>
+                                </div>
+                            </div>
+                            <div class="outbound-fields">
+                                <h4>Outbound API Fields</h4>
+                                <div id="editOutboundFields" class="field-list" ondrop="editDrop(event)" ondragover="allowDrop(event)" ondragenter="allowDrop(event)">
+                                    <p class="text-muted">Select an outbound API to see available fields</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mappings-list">
+                            <h4>Field Mappings</h4>
+                            <div id="editFieldMappings" class="mappings-container">
+                                <p class="text-muted">No mappings created yet. Drag fields from left to right to create mappings.</p>
+                            </div>
+                            <button type="button" onclick="addEditFieldMapping()" class="btn btn-secondary">Add Manual Mapping</button>
+                        </div>
+                    </div>
+                    <div class="error-message" id="editMappingsError"></div>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="editIsActive" name="is_active" checked style="width: auto; margin-right: 0.5rem;">
+                        Active (connector will process requests)
+                    </label>
+                </div>
+                
+                <div class="form-actions" style="display: flex; gap: 1rem; margin-top: 2rem;">
+                    <button type="submit" class="btn" style="background: #667eea; color: white; padding: 0.75rem 1.5rem; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">
+                        Update Connector
+                    </button>
+                    <button type="button" onclick="cancelEditConnectorForm()" class="btn" style="background: #6c757d; color: white; padding: 0.75rem 1.5rem; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">
                         Cancel
                     </button>
                 </div>
@@ -3017,6 +3595,20 @@ def transform(input_data):
             document.getElementById(type + 'API').value = api.name;
             document.getElementById(type + 'APIId').value = api.id;
             document.getElementById(type + 'Dropdown').style.display = 'none';
+            
+            // Load fields if we're in mappings mode
+            const isEdit = type.startsWith('edit');
+            const transformationMethod = isEdit ? 
+                document.querySelector('input[name="edit_transformation_method"]:checked')?.value :
+                document.querySelector('input[name="transformation_method"]:checked')?.value;
+                
+            if (transformationMethod === 'mappings') {
+                if (isEdit) {
+                    loadEditAPIFields();
+                } else {
+                    loadAPIFields();
+                }
+            }
         }
         
         // Hide dropdowns when clicking outside
@@ -3079,12 +3671,23 @@ def transform(input_data):
                 isValid = false;
             }
             
-            if (!script) {
-                showFieldError('pythonScript', 'Python script is required');
-                isValid = false;
-            } else if (script.length < 10) {
-                showFieldError('pythonScript', 'Python script must be at least 10 characters');
-                isValid = false;
+            const transformationMethod = document.querySelector('input[name="transformation_method"]:checked').value;
+            
+            if (transformationMethod === 'script') {
+                if (!script) {
+                    showFieldError('pythonScript', 'Python script is required when using script transformation');
+                    isValid = false;
+                } else if (script.length < 10) {
+                    showFieldError('pythonScript', 'Python script must be at least 10 characters');
+                    isValid = false;
+                }
+            } else if (transformationMethod === 'mappings') {
+                // Validate field mappings
+                const mappings = getFieldMappings();
+                if (mappings.length === 0) {
+                    showFieldError('mappingsError', 'At least one field mapping is required');
+                    isValid = false;
+                }
             }
             
             return isValid;
@@ -3108,13 +3711,20 @@ def transform(input_data):
         });
         
         function createConnector(name, inboundAPIId, outboundAPIId, script, isActive) {
+            const transformationMethod = document.querySelector('input[name="transformation_method"]:checked').value;
+            
             const payload = {
                 name: name,
                 inbound_api_id: inboundAPIId,
                 outbound_api_id: outboundAPIId,
-                python_script: script,
                 is_active: isActive
             };
+            
+            if (transformationMethod === 'script') {
+                payload.python_script = script;
+            } else if (transformationMethod === 'mappings') {
+                payload.field_mappings = getFieldMappings();
+            }
             
             const submitBtn = document.querySelector('#connectorForm button[type="submit"]');
             const originalText = submitBtn.textContent;
@@ -3149,37 +3759,87 @@ def transform(input_data):
         }
         
         function editConnector(id, name, inboundAPIId, outboundAPIId, isActive) {
-            // For now, show a simple form - could be enhanced with a modal
-            const newName = prompt('Enter connector name:', name);
-            if (!newName) return;
+            // Hide create form if visible
+            document.getElementById('createConnectorForm').style.display = 'none';
             
-            const payload = {
-                name: newName,
-                inbound_api_id: inboundAPIId,
-                outbound_api_id: outboundAPIId,
-                is_active: isActive
-            };
+            // Show edit form
+            const editForm = document.getElementById('editConnectorForm');
+            editForm.style.display = 'block';
             
-            fetch('/manage/org/{{.OrgID}}/connectors/' + id, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            })
-            .then(response => {
-                if (!response.ok) {
-                    return response.text().then(text => {
-                        throw new Error(text || 'Failed to update connector');
-                    });
-                }
-                return response.json();
-            })
-            .then(data => {
-                alert('Connector updated successfully!');
-                location.reload();
-            })
-            .catch(error => {
-                alert('Error updating connector: ' + error.message);
-            });
+            // Populate form fields
+            document.getElementById('editConnectorId').value = id;
+            document.getElementById('editConnectorName').value = name;
+            document.getElementById('editIsActive').checked = isActive;
+            
+            // Set API selections
+            document.getElementById('editInboundAPIId').value = inboundAPIId;
+            document.getElementById('editOutboundAPIId').value = outboundAPIId;
+            
+            // Find and set API names
+            const inboundAPI = apisData.find(api => api.id === inboundAPIId);
+            const outboundAPI = apisData.find(api => api.id === outboundAPIId);
+            
+            if (inboundAPI) {
+                document.getElementById('editInboundAPI').value = inboundAPI.name;
+            }
+            if (outboundAPI) {
+                document.getElementById('editOutboundAPI').value = outboundAPI.name;
+            }
+            
+            // Load existing connector data to determine transformation method
+            loadConnectorForEdit(id);
+            
+            // Scroll to form
+            editForm.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        function loadConnectorForEdit(connectorId) {
+            // Fetch connector details to populate the form
+            fetch('/manage/org/{{.OrgID}}/connectors/' + connectorId)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to load connector details');
+                    }
+                    return response.json();
+                })
+                .then(connector => {
+                    // Determine transformation method based on existing data
+                    if (connector.field_mappings && connector.field_mappings.length > 0) {
+                        // Has field mappings
+                        document.querySelector('input[name="edit_transformation_method"][value="mappings"]').checked = true;
+                        editFieldMappings = [...connector.field_mappings];
+                        toggleEditTransformationMethod();
+                        renderEditFieldMappings();
+                    } else if (connector.python_script) {
+                        // Has Python script
+                        document.querySelector('input[name="edit_transformation_method"][value="script"]').checked = true;
+                        // Debug: Log the original and unescaped script
+                        console.log('Original script from API:', connector.python_script);
+                        const unescapedScript = unescapePythonScript(connector.python_script);
+                        console.log('Unescaped script:', unescapedScript);
+                        document.getElementById('editPythonScript').value = unescapedScript;
+                        toggleEditTransformationMethod();
+                    } else {
+                        // Default to script method
+                        document.querySelector('input[name="edit_transformation_method"][value="script"]').checked = true;
+                        toggleEditTransformationMethod();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading connector details:', error);
+                    // Default to script method if we can't load details
+                    document.querySelector('input[name="edit_transformation_method"][value="script"]').checked = true;
+                    toggleEditTransformationMethod();
+                });
+        }
+        
+        function cancelEditConnectorForm() {
+            document.getElementById('editConnectorForm').style.display = 'none';
+            clearEditFormErrors();
+            document.getElementById('editConnectorFormElement').reset();
+            document.getElementById('editInboundAPIId').value = '';
+            document.getElementById('editOutboundAPIId').value = '';
+            editFieldMappings = [];
         }
         
         function editScript(connectorId) {
@@ -3213,6 +3873,559 @@ def transform(input_data):
                 });
             }
         }
+
+        // Field mapping functions
+        function toggleTransformationMethod() {
+            const method = document.querySelector('input[name="transformation_method"]:checked').value;
+            const scriptSection = document.getElementById('scriptSection');
+            const mappingsSection = document.getElementById('mappingsSection');
+            
+            if (method === 'script') {
+                scriptSection.style.display = 'block';
+                mappingsSection.style.display = 'none';
+                document.getElementById('pythonScript').required = true;
+            } else {
+                scriptSection.style.display = 'none';
+                mappingsSection.style.display = 'block';
+                document.getElementById('pythonScript').required = false;
+            }
+            
+            // Load API fields when switching to mappings
+            if (method === 'mappings') {
+                loadAPIFields();
+            }
+        }
+
+        function loadAPIFields() {
+            const inboundAPIId = document.getElementById('inboundAPIId').value;
+            const outboundAPIId = document.getElementById('outboundAPIId').value;
+            
+            if (inboundAPIId) {
+                loadFieldsForAPI(inboundAPIId, 'inboundFields');
+            }
+            if (outboundAPIId) {
+                loadFieldsForAPI(outboundAPIId, 'outboundFields');
+            }
+        }
+
+        function loadFieldsForAPI(apiId, containerId) {
+            if (!apiId) return;
+            
+            const container = document.getElementById(containerId);
+            container.innerHTML = '<p class="text-muted">Loading fields...</p>';
+            
+            // Fetch API schema fields
+            fetch('/manage/org/{{.OrgID}}/apis/' + apiId + '/schema')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to load API schema');
+                    }
+                    return response.json();
+                })
+                .then(schema => {
+                    if (schema && schema.parsed_fields && schema.parsed_fields.length > 0) {
+                        const isOutbound = containerId === 'outboundFields';
+                        container.innerHTML = schema.parsed_fields.map(field => 
+                            '<div class="field-item" draggable="true" ondragstart="dragStart(event)" data-field="' + field.path + '" title="' + (field.description || field.type) + '"' +
+                            (isOutbound ? ' ondrop="dropOnField(event)" ondragover="allowDrop(event)"' : '') + '>' +
+                                '<span class="field-path">' + field.path + '</span>' +
+                                '<span class="field-type">(' + field.type + ')</span>' +
+                            '</div>'
+                        ).join('');
+                        
+                        // Add drop zone functionality to outbound container
+                        if (isOutbound) {
+                            container.setAttribute('ondrop', 'drop(event)');
+                            container.setAttribute('ondragover', 'allowDrop(event)');
+                            container.setAttribute('ondragenter', 'allowDrop(event)');
+                        }
+                    } else {
+                        container.innerHTML = '<div class="no-schema-message">' +
+                            '<p class="text-muted">No schema defined for this API.</p>' +
+                            '<button type="button" onclick="showSchemaUpload(\'' + apiId + '\')" class="btn btn-sm">Define Schema</button>' +
+                        '</div>';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading API fields:', error);
+                    container.innerHTML = '<div class="no-schema-message">' +
+                        '<p class="text-muted">Error loading fields. <a href="#" onclick="loadFieldsForAPI(\'' + apiId + '\', \'' + containerId + '\')">Retry</a></p>' +
+                        '<button type="button" onclick="showSchemaUpload(\'' + apiId + '\')" class="btn btn-sm">Define Schema</button>' +
+                    '</div>';
+                });
+        }
+
+        let fieldMappings = [];
+        let editFieldMappings = [];
+
+        function addFieldMapping() {
+            const inboundField = prompt('Enter inbound field path (e.g., user.name):');
+            if (!inboundField) return;
+            
+            const outboundField = prompt('Enter outbound field path (e.g., customer.fullName):');
+            if (!outboundField) return;
+            
+            const transformScript = prompt('Enter optional Python transformation (leave empty for direct mapping):') || '';
+            
+            const mapping = {
+                inbound_field_path: inboundField,
+                outbound_field_path: outboundField,
+                transform_script: transformScript
+            };
+            
+            fieldMappings.push(mapping);
+            renderFieldMappings();
+        }
+
+        function renderFieldMappings() {
+            const container = document.getElementById('fieldMappings');
+            if (fieldMappings.length === 0) {
+                container.innerHTML = '<p class="text-muted">No mappings created yet. Drag fields from left to right to create mappings.</p>';
+                return;
+            }
+            
+            container.innerHTML = fieldMappings.map((mapping, index) => 
+                '<div class="mapping-item">' +
+                    '<span class="mapping-path">' + mapping.inbound_field_path + ' → ' + mapping.outbound_field_path + '</span>' +
+                    (mapping.transform_script ? '<span class="transform-script">Transform: ' + mapping.transform_script + '</span>' : '') +
+                    '<button type="button" onclick="removeFieldMapping(' + index + ')" class="btn-remove">×</button>' +
+                '</div>'
+            ).join('');
+        }
+
+        function removeFieldMapping(index) {
+            fieldMappings.splice(index, 1);
+            renderFieldMappings();
+        }
+
+        function getFieldMappings() {
+            return fieldMappings;
+        }
+
+        // Drag and drop functionality
+        function dragStart(event) {
+            event.dataTransfer.setData('text/plain', event.target.dataset.field);
+            event.target.style.opacity = '0.5';
+        }
+
+        function allowDrop(event) {
+            event.preventDefault();
+            event.currentTarget.style.backgroundColor = '#e3f2fd';
+        }
+
+        function dragLeave(event) {
+            event.currentTarget.style.backgroundColor = '';
+        }
+
+        function drop(event) {
+            event.preventDefault();
+            event.currentTarget.style.backgroundColor = '';
+            
+            const inboundField = event.dataTransfer.getData('text/plain');
+            if (!inboundField) return;
+            
+            const outboundField = prompt('Enter outbound field path for: ' + inboundField);
+            
+            if (outboundField) {
+                const transformScript = prompt('Enter optional Python transformation (leave empty for direct mapping):') || '';
+                
+                const mapping = {
+                    inbound_field_path: inboundField,
+                    outbound_field_path: outboundField,
+                    transform_script: transformScript
+                };
+                
+                fieldMappings.push(mapping);
+                renderFieldMappings();
+            }
+        }
+
+        function dropOnField(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.currentTarget.style.backgroundColor = '';
+            
+            const inboundField = event.dataTransfer.getData('text/plain');
+            const outboundField = event.currentTarget.dataset.field;
+            
+            if (!inboundField || !outboundField) return;
+            
+            // Check if mapping already exists
+            const existingMapping = fieldMappings.find(m => 
+                m.inbound_field_path === inboundField && m.outbound_field_path === outboundField
+            );
+            
+            if (existingMapping) {
+                alert('Mapping already exists: ' + inboundField + ' → ' + outboundField);
+                return;
+            }
+            
+            const transformScript = prompt('Enter optional Python transformation for ' + inboundField + ' → ' + outboundField + ' (leave empty for direct mapping):') || '';
+            
+            const mapping = {
+                inbound_field_path: inboundField,
+                outbound_field_path: outboundField,
+                transform_script: transformScript
+            };
+            
+            fieldMappings.push(mapping);
+            renderFieldMappings();
+            
+            // Visual feedback
+            event.currentTarget.style.backgroundColor = '#c8e6c9';
+            setTimeout(() => {
+                event.currentTarget.style.backgroundColor = '';
+            }, 1000);
+        }
+
+        // Reset drag opacity on drag end
+        document.addEventListener('dragend', function(event) {
+            event.target.style.opacity = '';
+        });
+
+        // Schema upload functionality
+        function showSchemaUpload(apiId) {
+            const modal = document.createElement('div');
+            modal.className = 'schema-modal';
+            modal.innerHTML = '<div class="schema-modal-content">' +
+                '<h3>Define API Schema</h3>' +
+                '<div class="schema-upload-options">' +
+                    '<label><input type="radio" name="schema_method" value="sample" checked> Upload Sample JSON Data</label>' +
+                    '<label><input type="radio" name="schema_method" value="json_schema"> Upload JSON Schema</label>' +
+                    '<label><input type="radio" name="schema_method" value="manual"> Define Fields Manually</label>' +
+                '</div>' +
+                '<div id="schemaUploadArea">' +
+                    '<textarea id="schemaInput" placeholder="Paste sample JSON data here..." rows="10"></textarea>' +
+                '</div>' +
+                '<div class="schema-modal-actions">' +
+                    '<button type="button" onclick="uploadSchema(\'' + apiId + '\')" class="btn">Upload Schema</button>' +
+                    '<button type="button" onclick="closeSchemaModal()" class="btn" style="background: #6c757d;">Cancel</button>' +
+                '</div>' +
+            '</div>';
+            document.body.appendChild(modal);
+        }
+
+        function closeSchemaModal() {
+            const modal = document.querySelector('.schema-modal');
+            if (modal) {
+                modal.remove();
+            }
+        }
+
+        function uploadSchema(apiId) {
+            const method = document.querySelector('input[name="schema_method"]:checked').value;
+            const schemaInput = document.getElementById('schemaInput').value.trim();
+            
+            if (!schemaInput) {
+                alert('Please provide schema data');
+                return;
+            }
+
+            const payload = {
+                schema_type: method === 'json_schema' ? 'json_schema' : 'custom',
+                schema_content: {
+                    raw: method === 'json_schema' ? schemaInput : '',
+                    sample_data: method === 'sample' ? JSON.parse(schemaInput) : null,
+                    description: 'Uploaded via UI'
+                }
+            };
+
+            fetch('/manage/org/{{.OrgID}}/apis/' + apiId + '/schema', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to upload schema');
+                }
+                return response.json();
+            })
+            .then(data => {
+                alert('Schema uploaded successfully!');
+                closeSchemaModal();
+                loadAPIFields(); // Reload fields
+            })
+            .catch(error => {
+                console.error('Error uploading schema:', error);
+                alert('Error uploading schema: ' + error.message);
+            });
+        }
+
+        // Edit form specific functions
+        function toggleEditTransformationMethod() {
+            const method = document.querySelector('input[name="edit_transformation_method"]:checked').value;
+            const scriptSection = document.getElementById('editScriptSection');
+            const mappingsSection = document.getElementById('editMappingsSection');
+            
+            if (method === 'script') {
+                scriptSection.style.display = 'block';
+                mappingsSection.style.display = 'none';
+                document.getElementById('editPythonScript').required = true;
+            } else {
+                scriptSection.style.display = 'none';
+                mappingsSection.style.display = 'block';
+                document.getElementById('editPythonScript').required = false;
+            }
+            
+            // Load API fields when switching to mappings
+            if (method === 'mappings') {
+                loadEditAPIFields();
+            }
+        }
+
+        function loadEditAPIFields() {
+            const inboundAPIId = document.getElementById('editInboundAPIId').value;
+            const outboundAPIId = document.getElementById('editOutboundAPIId').value;
+            
+            if (inboundAPIId) {
+                loadFieldsForAPI(inboundAPIId, 'editInboundFields');
+            }
+            if (outboundAPIId) {
+                loadFieldsForAPI(outboundAPIId, 'editOutboundFields');
+            }
+        }
+
+        function addEditFieldMapping() {
+            const inboundField = prompt('Enter inbound field path (e.g., user.name):');
+            if (!inboundField) return;
+            
+            const outboundField = prompt('Enter outbound field path (e.g., customer.fullName):');
+            if (!outboundField) return;
+            
+            const transformScript = prompt('Enter optional Python transformation (leave empty for direct mapping):') || '';
+            
+            const mapping = {
+                inbound_field_path: inboundField,
+                outbound_field_path: outboundField,
+                transform_script: transformScript
+            };
+            
+            editFieldMappings.push(mapping);
+            renderEditFieldMappings();
+        }
+
+        function renderEditFieldMappings() {
+            const container = document.getElementById('editFieldMappings');
+            if (editFieldMappings.length === 0) {
+                container.innerHTML = '<p class="text-muted">No mappings created yet. Drag fields from left to right to create mappings.</p>';
+                return;
+            }
+            
+            container.innerHTML = editFieldMappings.map((mapping, index) => 
+                '<div class="mapping-item">' +
+                    '<span class="mapping-path">' + mapping.inbound_field_path + ' → ' + mapping.outbound_field_path + '</span>' +
+                    (mapping.transform_script ? '<span class="transform-script">Transform: ' + mapping.transform_script + '</span>' : '') +
+                    '<button type="button" onclick="removeEditFieldMapping(' + index + ')" class="btn-remove">×</button>' +
+                '</div>'
+            ).join('');
+        }
+
+        function removeEditFieldMapping(index) {
+            editFieldMappings.splice(index, 1);
+            renderEditFieldMappings();
+        }
+
+        function getEditFieldMappings() {
+            return editFieldMappings;
+        }
+
+        function editDrop(event) {
+            event.preventDefault();
+            event.currentTarget.style.backgroundColor = '';
+            
+            const inboundField = event.dataTransfer.getData('text/plain');
+            if (!inboundField) return;
+            
+            const outboundField = prompt('Enter outbound field path for: ' + inboundField);
+            
+            if (outboundField) {
+                const transformScript = prompt('Enter optional Python transformation (leave empty for direct mapping):') || '';
+                
+                const mapping = {
+                    inbound_field_path: inboundField,
+                    outbound_field_path: outboundField,
+                    transform_script: transformScript
+                };
+                
+                editFieldMappings.push(mapping);
+                renderEditFieldMappings();
+            }
+        }
+
+        function clearEditFormErrors() {
+            const errorElements = document.querySelectorAll('#editConnectorFormElement .error-message');
+            errorElements.forEach(el => {
+                el.style.display = 'none';
+                el.textContent = '';
+            });
+            
+            const inputs = document.querySelectorAll('#editConnectorFormElement input, #editConnectorFormElement select, #editConnectorFormElement textarea');
+            inputs.forEach(input => {
+                input.style.borderColor = '#ddd';
+            });
+        }
+
+        function validateEditConnectorForm() {
+            clearEditFormErrors();
+            let isValid = true;
+            
+            const name = document.getElementById('editConnectorName').value.trim();
+            const inboundAPIId = document.getElementById('editInboundAPIId').value;
+            const outboundAPIId = document.getElementById('editOutboundAPIId').value;
+            const script = document.getElementById('editPythonScript').value.trim();
+            
+            if (!name) {
+                showEditFieldError('editConnectorName', 'Connector name is required');
+                isValid = false;
+            } else if (name.length < 3) {
+                showEditFieldError('editConnectorName', 'Connector name must be at least 3 characters');
+                isValid = false;
+            }
+            
+            if (!inboundAPIId) {
+                showEditFieldError('editInboundAPI', 'Please select an inbound API');
+                isValid = false;
+            }
+            
+            if (!outboundAPIId) {
+                showEditFieldError('editOutboundAPI', 'Please select an outbound API');
+                isValid = false;
+            }
+            
+            const transformationMethod = document.querySelector('input[name="edit_transformation_method"]:checked').value;
+            
+            if (transformationMethod === 'script') {
+                if (!script) {
+                    showEditFieldError('editPythonScript', 'Python script is required when using script transformation');
+                    isValid = false;
+                } else if (script.length < 10) {
+                    showEditFieldError('editPythonScript', 'Python script must be at least 10 characters');
+                    isValid = false;
+                }
+            } else if (transformationMethod === 'mappings') {
+                // Validate field mappings
+                const mappings = getEditFieldMappings();
+                if (mappings.length === 0) {
+                    showEditFieldError('editMappingsError', 'At least one field mapping is required');
+                    isValid = false;
+                }
+            }
+            
+            return isValid;
+        }
+
+        function showEditFieldError(fieldId, message) {
+            const field = document.getElementById(fieldId);
+            const errorEl = document.getElementById(fieldId.replace(/API$/, '') + 'Error');
+            
+            if (field) field.style.borderColor = '#dc3545';
+            if (errorEl) {
+                errorEl.textContent = message;
+                errorEl.style.display = 'block';
+            }
+        }
+
+        // Edit form submission handler
+        document.addEventListener('DOMContentLoaded', function() {
+            const editForm = document.getElementById('editConnectorFormElement');
+            if (editForm) {
+                editForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    
+                    if (!validateEditConnectorForm()) {
+                        return;
+                    }
+                    
+                    const id = document.getElementById('editConnectorId').value;
+                    const name = document.getElementById('editConnectorName').value.trim();
+                    const inboundAPIId = document.getElementById('editInboundAPIId').value;
+                    const outboundAPIId = document.getElementById('editOutboundAPIId').value;
+                    const script = document.getElementById('editPythonScript').value.trim();
+                    const isActive = document.getElementById('editIsActive').checked;
+                    
+                    updateConnector(id, name, inboundAPIId, outboundAPIId, script, isActive);
+                });
+            }
+        });
+
+        function updateConnector(id, name, inboundAPIId, outboundAPIId, script, isActive) {
+            const transformationMethod = document.querySelector('input[name="edit_transformation_method"]:checked').value;
+            
+            const payload = {
+                name: name,
+                inbound_api_id: inboundAPIId,
+                outbound_api_id: outboundAPIId,
+                is_active: isActive
+            };
+            
+            if (transformationMethod === 'script') {
+                payload.python_script = script;
+                payload.field_mappings = []; // Clear field mappings when using script
+            } else if (transformationMethod === 'mappings') {
+                payload.field_mappings = getEditFieldMappings();
+                payload.python_script = ''; // Clear script when using mappings
+            }
+            
+            const submitBtn = document.querySelector('#editConnectorFormElement button[type="submit"]');
+            const originalText = submitBtn.textContent;
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Updating...';
+            
+            fetch('/manage/org/{{.OrgID}}/connectors/' + id, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => {
+                        throw new Error(text || 'Failed to update connector');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                alert('Connector updated successfully!');
+                cancelEditConnectorForm();
+                location.reload();
+            })
+            .catch(error => {
+                alert('Error updating connector: ' + error.message);
+            })
+            .finally(() => {
+                submitBtn.disabled = false;
+                submitBtn.textContent = originalText;
+            });
+        }
+
+        // Helper function to unescape Python script for display
+        function unescapePythonScript(script) {
+            if (!script) return '';
+            
+            // Unescape common JSON escape sequences
+            return script
+                .replace(/\\n/g, '\n')      // Newlines
+                .replace(/\\r/g, '\r')      // Carriage returns
+                .replace(/\\t/g, '\t')      // Tabs
+                .replace(/\\"/g, '"')       // Double quotes
+                .replace(/\\\\/g, '\\');    // Backslashes (must be last)
+        }
+
+        // Update API selection handlers
+        document.addEventListener('DOMContentLoaded', function() {
+            const inboundSelect = document.getElementById('inboundAPIId');
+            const outboundSelect = document.getElementById('outboundAPIId');
+            
+            if (inboundSelect) {
+                inboundSelect.addEventListener('change', loadAPIFields);
+            }
+            if (outboundSelect) {
+                outboundSelect.addEventListener('change', loadAPIFields);
+            }
+        });
     </script>
 </body>
 </html>`
@@ -3692,6 +4905,14 @@ func (h *AuthUIHandler) performAPITest(apiConfig *models.APIConfiguration, metho
 
 	// Build test URL
 	testURL := apiConfig.Endpoint
+
+	// For inbound APIs, the endpoint is just a path, so we need to construct a full URL
+	if apiConfig.Direction == "inbound" {
+		// Construct full URL using the server's base URL
+		// For inbound APIs, the actual endpoint is /api{endpoint}
+		testURL = "http://localhost:8088/api" + apiConfig.Endpoint
+	}
+
 	if path != "" {
 		if !strings.HasSuffix(testURL, "/") && !strings.HasPrefix(path, "/") {
 			testURL += "/"
@@ -3724,7 +4945,8 @@ func (h *AuthUIHandler) performAPITest(apiConfig *models.APIConfiguration, metho
 	}
 
 	// Set headers from API config
-	for key, value := range apiConfig.Headers {
+	allHeaders := apiConfig.Headers.GetAllHeaders()
+	for key, value := range allHeaders {
 		req.Header.Set(key, value)
 	}
 
@@ -3814,13 +5036,29 @@ func (h *AuthUIHandler) HandleCreateConnector(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(createdConnector)
 }
 
+func (h *AuthUIHandler) HandleGetConnector(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	connectorID := vars["connectorID"]
+
+	connector, err := h.configService.GetConnector(r.Context(), connectorID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get connector")
+		http.Error(w, "Failed to get connector", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(connector)
+}
+
 func (h *AuthUIHandler) HandleUpdateConnector(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	connectorID := vars["connectorID"]
 	orgID := vars["orgID"]
 
 	var connector models.Connector
-	if err := json.NewDecoder(r.Body).Decode(&connector); err != nil {
+	if err := h.decodeJSONRequest(r, &connector); err != nil {
+		h.logger.WithError(err).Error("Failed to decode connector update request")
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -3853,11 +5091,701 @@ func (h *AuthUIHandler) HandleDeleteConnector(w http.ResponseWriter, r *http.Req
 }
 
 func (h *AuthUIHandler) HandleLogsManagement(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte("<h1>Logs Management</h1><p>Logs management interface coming soon...</p>"))
+	user := h.getUserFromContext(r)
+	vars := mux.Vars(r)
+	orgID := vars["orgID"]
+
+	// Get recent request logs for the organisation
+	logs, err := h.getRecentRequestLogs(r.Context(), orgID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get request logs")
+		logs = []map[string]interface{}{} // Empty slice as fallback
+	}
+
+	h.renderLogsManagement(w, user, orgID, logs)
 }
 
 func (h *AuthUIHandler) HandleMetricsManagement(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte("<h1>Metrics Management</h1><p>Metrics management interface coming soon...</p>"))
+}
+
+// Helper function to get recent request logs
+func (h *AuthUIHandler) getRecentRequestLogs(ctx context.Context, orgID string) ([]map[string]interface{}, error) {
+	// Get recent request logs from the database
+	requestLogs, err := h.requestLogRepo.GetByOrganisation(ctx, orgID, 50, 0) // Get last 50 logs
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get request logs from database")
+		return []map[string]interface{}{}, err
+	}
+
+	// Convert to the format expected by the template
+	logs := make([]map[string]interface{}, len(requestLogs))
+	for i, log := range requestLogs {
+		connectorID := ""
+		if log.Connector != nil {
+			connectorID = log.Connector.Name + " (" + log.ConnectorID[:8] + "...)"
+		} else if log.ConnectorID != "" {
+			connectorID = log.ConnectorID[:8] + "..."
+		}
+
+		message := "Request processed successfully"
+		if log.ErrorMessage != "" {
+			message = log.ErrorMessage
+		} else if log.StatusCode >= 400 {
+			message = fmt.Sprintf("HTTP %d error", log.StatusCode)
+		}
+
+		// Debug: log if we have error details
+		if log.ErrorDetails != "" {
+			h.logger.WithField("request_id", log.RequestID).
+				WithField("error_details_length", len(log.ErrorDetails)).
+				WithField("error_details_preview", func() string {
+					if len(log.ErrorDetails) > 100 {
+						return log.ErrorDetails[:100] + "..."
+					}
+					return log.ErrorDetails
+				}()).
+				Info("Found error details in database for request log")
+		}
+
+		logs[i] = map[string]interface{}{
+			"timestamp":     log.Timestamp.Format("2006-01-02 15:04:05"),
+			"method":        log.Method,
+			"path":          log.Path,
+			"status_code":   log.StatusCode,
+			"response_time": fmt.Sprintf("%dms", log.ProcessingTime),
+			"connector_id":  connectorID,
+			"message":       message,
+			"request_id":    log.RequestID,
+			"request_body":  template.JSEscapeString(log.RequestBody),
+			"response_body": template.JSEscapeString(log.ResponseBody),
+			"error_details": log.ErrorDetails, // Don't escape - we want raw JSON for JavaScript parsing
+		}
+	}
+
+	return logs, nil
+}
+
+func (h *AuthUIHandler) renderLogsManagement(w http.ResponseWriter, user *models.User, orgID string, logs []map[string]interface{}) {
+	tmpl := `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logs Management - API Translation Platform</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; color: #333; }
+        .header { background: white; border-bottom: 1px solid #dee2e6; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { color: #667eea; font-size: 1.5rem; }
+        .nav-links { display: flex; gap: 1rem; align-items: center; }
+        .nav-links a { color: #667eea; text-decoration: none; padding: 0.5rem 1rem; border-radius: 6px; transition: background-color 0.3s; }
+        .nav-links a:hover { background: #f8f9fa; }
+        .btn { padding: 0.5rem 1rem; background: #667eea; color: white; text-decoration: none; border-radius: 6px; border: none; cursor: pointer; font-size: 0.9rem; }
+        .btn:hover { background: #5a6fd8; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
+        .logs-table { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); overflow: hidden; }
+        .logs-table table { width: 100%; border-collapse: collapse; }
+        .logs-table th, .logs-table td { padding: 1rem; text-align: left; border-bottom: 1px solid #dee2e6; }
+        .logs-table th { background: #f8f9fa; font-weight: 600; color: #495057; }
+        .logs-table tr:hover { background: #f8f9fa; }
+        .status-badge { padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .status-200 { background: #d4edda; color: #155724; }
+        .status-404 { background: #fff3cd; color: #856404; }
+        .status-500 { background: #f8d7da; color: #721c24; }
+        .breadcrumb { margin-bottom: 2rem; color: #666; }
+        .breadcrumb a { color: #667eea; text-decoration: none; }
+        .breadcrumb a:hover { text-decoration: underline; }
+        .method-badge { padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .method-get { background: #d1ecf1; color: #0c5460; }
+        .method-post { background: #d4edda; color: #155724; }
+        .method-put { background: #fff3cd; color: #856404; }
+        .method-delete { background: #f8d7da; color: #721c24; }
+        .refresh-btn { margin-left: 1rem; }
+        .log-message { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        
+        /* Modal styles */
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-content { background: white; border-radius: 8px; padding: 2rem; max-width: 80%; max-height: 80%; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid #dee2e6; padding-bottom: 1rem; }
+        .modal-header h3 { margin: 0; color: #333; }
+        .modal-close { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #666; }
+        .modal-close:hover { color: #333; }
+        .modal-section { margin-bottom: 1.5rem; }
+        .modal-section h4 { margin-bottom: 0.5rem; color: #555; }
+        .modal-body { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 1rem; font-family: 'Courier New', monospace; font-size: 0.9rem; white-space: pre-wrap; word-wrap: break-word; max-height: 300px; overflow-y: auto; }
+        .modal-info { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+        .modal-info-item { background: #f8f9fa; padding: 0.5rem; border-radius: 4px; }
+        .modal-info-label { font-weight: 600; color: #555; font-size: 0.9rem; }
+        .modal-info-value { color: #333; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 Request Logs</h1>
+        <div class="nav-links">
+            <a href="/manage/org/{{.OrgID}}/dashboard">Dashboard</a>
+            <a href="/manage/org/{{.OrgID}}/apis">APIs</a>
+            <a href="/manage/org/{{.OrgID}}/connectors">Connectors</a>
+            <a href="/manage/org/{{.OrgID}}/logs">Logs</a>
+            <form method="POST" action="/logout" style="display: inline;">
+                <button type="submit" class="btn btn-danger">Logout</button>
+            </form>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="breadcrumb">
+            <a href="/manage/org/{{.OrgID}}/dashboard">Organisation Dashboard</a> > Request Logs
+        </div>
+        
+        <div class="page-header">
+            <h2>Recent API Requests</h2>
+            <button class="btn refresh-btn" onclick="location.reload()">🔄 Refresh</button>
+        </div>
+        
+        <div class="logs-table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Method</th>
+                        <th>Path</th>
+                        <th>Status</th>
+                        <th>Response Time</th>
+                        <th>Connector</th>
+                        <th>Message</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Logs}}
+                    <tr>
+                        <td>{{.timestamp}}</td>
+                        <td>
+                            <span class="method-badge method-{{.method | lower}}">{{.method}}</span>
+                        </td>
+                        <td><code>{{.path}}</code></td>
+                        <td>
+                            <span class="status-badge status-{{.status_code}}">{{.status_code}}</span>
+                        </td>
+                        <td>{{.response_time}}</td>
+                        <td>
+                            {{if .connector_id}}
+                            <code>{{.connector_id}}</code>
+                            {{else}}
+                            <span style="color: #6c757d;">-</span>
+                            {{end}}
+                        </td>
+                        <td>
+                            <div class="log-message" title="{{.message}}">{{.message}}</div>
+                        </td>
+                        <td>
+                            <button class="btn btn-sm" onclick="showRequestDetails('{{.request_id}}', '{{.method}}', '{{.path}}', '{{.status_code}}', '{{.timestamp}}', '{{.message}}', {{.request_body}}, {{.response_body}}, {{.error_details}})">Details</button>
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        
+        {{if not .Logs}}
+        <div style="text-align: center; padding: 3rem; color: #6c757d;">
+            <h3>No logs available</h3>
+            <p>Request logs will appear here as API calls are processed.</p>
+        </div>
+        {{end}}
+    </div>
+    
+    <!-- Request Details Modal -->
+    <div id="requestModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Request Details</h3>
+                <button class="modal-close" onclick="closeRequestModal()">&times;</button>
+            </div>
+            
+            <div class="modal-info">
+                <div class="modal-info-item">
+                    <div class="modal-info-label">Request ID</div>
+                    <div class="modal-info-value" id="modalRequestId"></div>
+                </div>
+                <div class="modal-info-item">
+                    <div class="modal-info-label">Method</div>
+                    <div class="modal-info-value" id="modalMethod"></div>
+                </div>
+                <div class="modal-info-item">
+                    <div class="modal-info-label">Path</div>
+                    <div class="modal-info-value" id="modalPath"></div>
+                </div>
+                <div class="modal-info-item">
+                    <div class="modal-info-label">Status Code</div>
+                    <div class="modal-info-value" id="modalStatusCode"></div>
+                </div>
+                <div class="modal-info-item">
+                    <div class="modal-info-label">Timestamp</div>
+                    <div class="modal-info-value" id="modalTimestamp"></div>
+                </div>
+                <div class="modal-info-item">
+                    <div class="modal-info-label">Message</div>
+                    <div class="modal-info-value" id="modalMessage"></div>
+                </div>
+            </div>
+            
+            <div class="modal-section">
+                <h4>Request Body</h4>
+                <div class="modal-body" id="modalRequestBody"></div>
+            </div>
+            
+            <div class="modal-section">
+                <h4>Response Body</h4>
+                <div class="modal-body" id="modalResponseBody"></div>
+            </div>
+            
+            <div class="modal-section" id="errorDetailsSection" style="display: none;">
+                <h4>Detailed Error Information</h4>
+                <div class="modal-body" id="modalErrorDetails"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function showRequestDetails(requestId, method, path, statusCode, timestamp, message, requestBody, responseBody, errorDetails) {
+            document.getElementById('modalRequestId').textContent = requestId;
+            document.getElementById('modalMethod').innerHTML = '<span class="method-badge method-' + method.toLowerCase() + '">' + method + '</span>';
+            document.getElementById('modalPath').innerHTML = '<code>' + path + '</code>';
+            document.getElementById('modalStatusCode').innerHTML = '<span class="status-badge status-' + statusCode + '">' + statusCode + '</span>';
+            document.getElementById('modalTimestamp').textContent = timestamp;
+            document.getElementById('modalMessage').textContent = message;
+            
+            // Format and display request body
+            const reqBody = requestBody || 'No request body';
+            document.getElementById('modalRequestBody').textContent = reqBody === 'No request body' ? reqBody : formatBody(reqBody);
+            
+            // Format and display response body
+            const respBody = responseBody || 'No response body';
+            document.getElementById('modalResponseBody').textContent = respBody === 'No response body' ? respBody : formatBody(respBody);
+            
+            // Handle detailed error information
+            const errorDetailsSection = document.getElementById('errorDetailsSection');
+            const modalErrorDetails = document.getElementById('modalErrorDetails');
+            
+            if (errorDetails && errorDetails.trim() !== '') {
+                try {
+                    const parsedErrorDetails = JSON.parse(errorDetails);
+                    modalErrorDetails.textContent = formatErrorDetails(parsedErrorDetails);
+                    errorDetailsSection.style.display = 'block';
+                } catch (e) {
+                    // If it's not valid JSON, display as plain text
+                    modalErrorDetails.textContent = errorDetails;
+                    errorDetailsSection.style.display = 'block';
+                }
+            } else {
+                errorDetailsSection.style.display = 'none';
+            }
+            
+            document.getElementById('requestModal').style.display = 'flex';
+        }
+        
+        function closeRequestModal() {
+            document.getElementById('requestModal').style.display = 'none';
+        }
+        
+        function formatBody(body) {
+            try {
+                // Try to parse and format as JSON
+                const parsed = JSON.parse(body);
+                return JSON.stringify(parsed, null, 2);
+            } catch (e) {
+                // If not JSON, return as-is
+                return body;
+            }
+        }
+        
+        function formatErrorDetails(errorDetails) {
+            let formatted = '';
+            
+            // Add basic error information
+            if (errorDetails.error_type) {
+                formatted += '🔴 Error Type: ' + errorDetails.error_type + '\n';
+            }
+            if (errorDetails.error_message) {
+                formatted += '💬 Error Message: ' + errorDetails.error_message + '\n';
+            }
+            if (errorDetails.timestamp) {
+                formatted += '⏰ Timestamp: ' + new Date(errorDetails.timestamp).toLocaleString() + '\n';
+            }
+            
+            // Add Python-specific error details
+            if (errorDetails.python_error_details) {
+                const pythonError = errorDetails.python_error_details;
+                formatted += '\n🐍 === PYTHON ERROR DETAILS ===\n';
+                
+                // Handle nested detailed_error structure
+                let actualError = pythonError;
+                if (pythonError.detailed_error) {
+                    actualError = pythonError.detailed_error;
+                }
+                
+                if (actualError.error_type) {
+                    formatted += '📛 Python Error Type: ' + actualError.error_type + '\n';
+                }
+                if (actualError.error_message) {
+                    formatted += '📝 Python Error Message: ' + actualError.error_message + '\n';
+                }
+                
+                // Add stack trace information
+                if (actualError.stack_trace && Array.isArray(actualError.stack_trace)) {
+                    formatted += '\n📍 STACK TRACE:\n';
+                    actualError.stack_trace.forEach((frame, index) => {
+                        formatted += '┌─ Frame ' + (index + 1) + ' ─────────────────────\n';
+                        if (frame.function_name) {
+                            formatted += '│ 🔧 Function: ' + frame.function_name + '()\n';
+                        }
+                        if (frame.line_number) {
+                            formatted += '│ 📍 Line: ' + frame.line_number + '\n';
+                        }
+                        if (frame.line_content) {
+                            formatted += '│ 💻 Code: ' + frame.line_content + '\n';
+                        }
+                        if (frame.local_variables && Object.keys(frame.local_variables).length > 0) {
+                            formatted += '│ 🔍 Local Variables:\n';
+                            Object.entries(frame.local_variables).forEach(([key, value]) => {
+                                const formattedValue = typeof value === 'string' ? '"' + value + '"' : JSON.stringify(value);
+                                formatted += '│   • ' + key + ' = ' + formattedValue + '\n';
+                            });
+                        }
+                        formatted += '└─────────────────────────────\n\n';
+                    });
+                }
+                
+                // Add full traceback
+                if (actualError.full_traceback && Array.isArray(actualError.full_traceback)) {
+                    formatted += '📋 FULL PYTHON TRACEBACK:\n';
+                    formatted += '┌─────────────────────────────\n';
+                    actualError.full_traceback.forEach(line => {
+                        formatted += '│ ' + line.replace(/\n$/, '') + '\n';
+                    });
+                    formatted += '└─────────────────────────────\n\n';
+                }
+            }
+            
+            // Add execution context
+            if (errorDetails.exit_code !== undefined) {
+                formatted += '🚪 Exit Code: ' + errorDetails.exit_code + '\n';
+            }
+            if (errorDetails.stderr) {
+                formatted += '⚠️  Stderr Output:\n' + errorDetails.stderr + '\n';
+            }
+            if (errorDetails.input_data) {
+                formatted += '📥 Input Data Preview:\n';
+                try {
+                    const inputData = JSON.parse(errorDetails.input_data);
+                    formatted += JSON.stringify(inputData, null, 2) + '\n';
+                } catch (e) {
+                    formatted += errorDetails.input_data + '\n';
+                }
+            }
+            
+            // Add common error detection and suggestions
+            if (errorDetails.python_error_details && errorDetails.python_error_details.common_error_detected) {
+                const commonError = errorDetails.python_error_details.common_error_detected;
+                formatted += '\n🎯 === COMMON ERROR DETECTED ===\n';
+                
+                if (commonError.common_error === 'json_loads_on_dict') {
+                    formatted += '🚨 You are trying to call json.loads() on input_data!\n';
+                    formatted += '💡 input_data is already a Python dictionary - no parsing needed.\n\n';
+                }
+                
+                if (commonError.suggestion) {
+                    formatted += '✅ SOLUTION:\n';
+                    formatted += commonError.suggestion + '\n';
+                }
+                
+                if (commonError.json_loads_calls && commonError.json_loads_calls.length > 0) {
+                    formatted += '\n🔍 Found json.loads() calls in your code:\n';
+                    commonError.json_loads_calls.forEach((call, index) => {
+                        formatted += '  • Line ' + call.line_number + ': ' + call.line_content + '\n';
+                    });
+                }
+                
+                formatted += '\n📖 Remember: input_data is already parsed for you!\n';
+                formatted += '═══════════════════════════════════════\n\n';
+            }
+            
+            return formatted || JSON.stringify(errorDetails, null, 2);
+        }
+        
+        // Close modal when clicking outside
+        document.getElementById('requestModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeRequestModal();
+            }
+        });
+        
+        // Auto-refresh every 30 seconds
+        setTimeout(function() {
+            location.reload();
+        }, 30000);
+    </script>
+</body>
+</html>`
+
+	t, err := template.New("logs").Funcs(template.FuncMap{
+		"lower": strings.ToLower,
+	}).Parse(tmpl)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to parse logs template")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	data := struct {
+		User  *models.User
+		OrgID string
+		Logs  []map[string]interface{}
+	}{
+		User:  user,
+		OrgID: orgID,
+		Logs:  logs,
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := t.Execute(w, data); err != nil {
+		h.logger.WithError(err).Error("Failed to execute logs template")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
+}
+
+// API Schema Management Handlers
+
+func (h *AuthUIHandler) HandleGetAPISchema(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	apiID := vars["apiID"]
+
+	// Get schema for the API
+	schema, err := h.schemaService.GetSchemaByAPIID(r.Context(), apiID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get API schema")
+		http.Error(w, "Failed to get schema", http.StatusInternalServerError)
+		return
+	}
+
+	// If no schema exists, return empty schema
+	if schema == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"parsed_fields": []interface{}{},
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(schema)
+}
+
+func (h *AuthUIHandler) HandleCreateAPISchema(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	apiID := vars["apiID"]
+
+	var schemaRequest struct {
+		SchemaType    string                 `json:"schema_type"`
+		SchemaContent map[string]interface{} `json:"schema_content"`
+	}
+
+	if err := h.decodeJSONRequest(r, &schemaRequest); err != nil {
+		h.logger.WithError(err).Error("Failed to decode JSON request")
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Check if schema already exists
+	existingSchema, err := h.schemaService.GetSchemaByAPIID(r.Context(), apiID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to check existing schema")
+		http.Error(w, "Failed to check existing schema", http.StatusInternalServerError)
+		return
+	}
+
+	var schema *models.APISchema
+	if existingSchema != nil {
+		// Update existing schema
+		schema = existingSchema
+		schema.SchemaType = schemaRequest.SchemaType
+		schema.SchemaContent = models.SchemaContent{
+			Raw:         "",
+			Parsed:      schemaRequest.SchemaContent,
+			SampleData:  nil,
+			Description: "Updated via UI",
+		}
+	} else {
+		// Create new schema
+		schema = &models.APISchema{
+			APIConfigurationID: apiID,
+			SchemaType:         schemaRequest.SchemaType,
+			SchemaContent: models.SchemaContent{
+				Raw:         "",
+				Parsed:      schemaRequest.SchemaContent,
+				SampleData:  nil,
+				Description: "Uploaded via UI",
+			},
+		}
+	}
+
+	// Handle different schema types
+	if schemaRequest.SchemaType == "json_schema" {
+		if raw, ok := schemaRequest.SchemaContent["raw"].(string); ok {
+			schema.SchemaContent.Raw = raw
+			// Parse JSON schema to extract fields
+			fields, err := h.schemaService.ParseJSONSchema(r.Context(), raw)
+			if err != nil {
+				h.logger.WithError(err).Error("Failed to parse JSON schema")
+				http.Error(w, "Invalid JSON schema", http.StatusBadRequest)
+				return
+			}
+			schema.ParsedFields = fields
+		}
+	} else if schemaRequest.SchemaType == "custom" {
+		if sampleData, ok := schemaRequest.SchemaContent["sample_data"].(map[string]interface{}); ok {
+			schema.SchemaContent.SampleData = sampleData
+			// Parse sample data to extract fields
+			fields, err := h.schemaService.ParseSampleData(r.Context(), sampleData)
+			if err != nil {
+				h.logger.WithError(err).Error("Failed to parse sample data")
+				http.Error(w, "Invalid sample data", http.StatusBadRequest)
+				return
+			}
+			schema.ParsedFields = fields
+		}
+	}
+
+	// Create or update the schema
+	var resultSchema *models.APISchema
+	if existingSchema != nil {
+		// Update existing schema
+		resultSchema, err = h.schemaService.UpdateSchema(r.Context(), schema)
+		if err != nil {
+			h.logger.WithError(err).Error("Failed to update API schema")
+			http.Error(w, "Failed to update schema", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Create new schema
+		resultSchema, err = h.schemaService.CreateSchema(r.Context(), schema)
+		if err != nil {
+			h.logger.WithError(err).Error("Failed to create API schema")
+			http.Error(w, "Failed to create schema", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if existingSchema != nil {
+		w.WriteHeader(http.StatusOK) // 200 for update
+	} else {
+		w.WriteHeader(http.StatusCreated) // 201 for create
+	}
+	json.NewEncoder(w).Encode(resultSchema)
+}
+
+func (h *AuthUIHandler) HandleUpdateAPISchema(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	apiID := vars["apiID"]
+
+	// Get existing schema
+	existingSchema, err := h.schemaService.GetSchemaByAPIID(r.Context(), apiID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get existing schema")
+		http.Error(w, "Failed to get schema", http.StatusInternalServerError)
+		return
+	}
+
+	if existingSchema == nil {
+		http.Error(w, "Schema not found", http.StatusNotFound)
+		return
+	}
+
+	var schemaRequest struct {
+		SchemaType    string                 `json:"schema_type"`
+		SchemaContent map[string]interface{} `json:"schema_content"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&schemaRequest); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Update schema
+	existingSchema.SchemaType = schemaRequest.SchemaType
+	existingSchema.SchemaContent.Parsed = schemaRequest.SchemaContent
+
+	// Handle different schema types
+	if schemaRequest.SchemaType == "json_schema" {
+		if raw, ok := schemaRequest.SchemaContent["raw"].(string); ok {
+			existingSchema.SchemaContent.Raw = raw
+			// Parse JSON schema to extract fields
+			fields, err := h.schemaService.ParseJSONSchema(r.Context(), raw)
+			if err != nil {
+				h.logger.WithError(err).Error("Failed to parse JSON schema")
+				http.Error(w, "Invalid JSON schema", http.StatusBadRequest)
+				return
+			}
+			existingSchema.ParsedFields = fields
+		}
+	} else if schemaRequest.SchemaType == "custom" {
+		if sampleData, ok := schemaRequest.SchemaContent["sample_data"].(map[string]interface{}); ok {
+			existingSchema.SchemaContent.SampleData = sampleData
+			// Parse sample data to extract fields
+			fields, err := h.schemaService.ParseSampleData(r.Context(), sampleData)
+			if err != nil {
+				h.logger.WithError(err).Error("Failed to parse sample data")
+				http.Error(w, "Invalid sample data", http.StatusBadRequest)
+				return
+			}
+			existingSchema.ParsedFields = fields
+		}
+	}
+
+	// Update the schema
+	updatedSchema, err := h.schemaService.UpdateSchema(r.Context(), existingSchema)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to update API schema")
+		http.Error(w, "Failed to update schema", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(updatedSchema)
+}
+func (h *AuthUIHandler) HandleDeleteAPISchema(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	apiID := vars["apiID"]
+
+	// Get existing schema first
+	existingSchema, err := h.schemaService.GetSchemaByAPIID(r.Context(), apiID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get existing schema")
+		http.Error(w, "Failed to get schema", http.StatusInternalServerError)
+		return
+	}
+
+	if existingSchema == nil {
+		http.Error(w, "Schema not found", http.StatusNotFound)
+		return
+	}
+
+	// Delete the schema
+	err = h.schemaService.DeleteSchema(r.Context(), existingSchema.ID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to delete API schema")
+		http.Error(w, "Failed to delete schema", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -5,7 +5,7 @@ CREATE TABLE connectors (
     name VARCHAR(255) NOT NULL,
     inbound_api_id UUID NOT NULL REFERENCES api_configurations(id) ON DELETE CASCADE,
     outbound_api_id UUID NOT NULL REFERENCES api_configurations(id) ON DELETE CASCADE,
-    python_script TEXT NOT NULL,
+    python_script TEXT,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

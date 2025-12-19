@@ -154,7 +154,10 @@ func (m *SecurityMiddleware) InputValidation(next http.Handler) http.Handler {
 			contentType := r.Header.Get("Content-Type")
 			if !strings.HasPrefix(contentType, "application/json") &&
 				!strings.HasPrefix(contentType, "application/x-www-form-urlencoded") &&
-				!strings.HasPrefix(contentType, "multipart/form-data") {
+				!strings.HasPrefix(contentType, "multipart/form-data") &&
+				!strings.HasPrefix(contentType, "text/xml") &&
+				!strings.HasPrefix(contentType, "application/soap+xml") &&
+				!strings.HasPrefix(contentType, "application/xml") {
 				http.Error(w, "Unsupported Media Type", http.StatusUnsupportedMediaType)
 				return
 			}

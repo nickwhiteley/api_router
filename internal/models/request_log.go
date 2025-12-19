@@ -17,6 +17,7 @@ type RequestLog struct {
 	StatusCode     int            `json:"status_code" gorm:"not null"`
 	ProcessingTime int64          `json:"processing_time"` // in milliseconds
 	ErrorMessage   string         `json:"error_message,omitempty"`
+	ErrorDetails   string         `json:"error_details,omitempty" gorm:"type:text"` // JSON string with detailed error information
 	RequestBody    string         `json:"request_body,omitempty" gorm:"type:text"`
 	ResponseBody   string         `json:"response_body,omitempty" gorm:"type:text"`
 	Timestamp      time.Time      `json:"timestamp" gorm:"not null;index"`
